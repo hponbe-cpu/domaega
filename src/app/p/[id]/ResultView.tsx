@@ -84,7 +84,7 @@ export default function ResultView({ initial }: { initial: Analysis }) {
         ) : row.status === "completed" && row.state === "likely_domestic" ? (
           <DomesticHero />
         ) : row.status === "completed" && row.state === "unknown" ? (
-          <UnknownHero />
+          <UnknownHero note={row.confidence_note} />
         ) : row.status === "no_match_found" ? (
           <NoMatchHero />
         ) : row.status === "scrape_failed" ? (
@@ -214,7 +214,7 @@ function DomesticHero() {
   );
 }
 
-function UnknownHero() {
+function UnknownHero({ note }: { note: string | null }) {
   return (
     <section className="text-center py-10">
       <div className="text-xs tracking-[0.2em] uppercase text-ink-muted mb-5">
@@ -224,6 +224,11 @@ function UnknownHero() {
         판단 유보
       </div>
       <StatePill state="unknown" top1={null} />
+      {note ? (
+        <div className="mt-2 text-sm text-ink-muted max-w-md mx-auto leading-relaxed">
+          {note}
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -1,5 +1,16 @@
 # TODOS
 
+## Blockers surfaced 2026-04-20 during worker skeleton
+
+- **Naver 스마트스토어 직접 HTML fetch 불가 (edge 429)** — 디자인 doc §Architecture의 "a2. OG title 가볍게 fetch (no proxy, regular fetch)" 가정이 실측에서 깨짐. 일반 fetch, 모바일 UA, microlink.io third-party proxy, 심지어 real Chromium (gstack browse)까지 모두 429. IP-scope rate limit 추정.
+  - Impact: `runNaverStage()`의 `fetchHtml()` 단계가 거의 항상 실패. 현재 scrape_failed 경로로만 결과 나옴.
+  - **Fix (필수, Weekend 2 초두):** Railway HTTP service 위에 Playwright + residential proxy ($50/월 BrightData starter) 구성. 디자인 doc이 1688 용으로 잡았던 워커를 Naver에도 쓰는 것으로 확장.
+  - 코드는 Railway 워커가 붙으면 plug-and-play (`/api/worker/tick`의 `runNaverStage(url)` 호출부만 워커 서비스로 이관).
+
+- **Naver Shopping Search API의 productId ≠ Smartstore URL productId** — API `items[].productId`는 Naver Shopping 카탈로그 ID (예: 84414274193), URL productId는 셀러 상품 ID (예: 9207641410). 서로 다른 스키마. link 필드도 `main/products/…` 으로 정규화돼 직접 매칭 불가.
+  - Impact: 디자인 doc §a4 ("link에서 product ID 일치하는 행 찾아") 전략 수정 필요.
+  - **Fix:** (1) OG title 기반 fuzzy 매칭 (레벤슈타인 or cosine sim on title), (2) mallName + lprice 근사 교차검증, (3) Vision 기반 이미지 유사도 top-N 재랭크. OG title이 정확하면 top-1 매칭 충분한 경우가 많음 — 먼저 해보고 부족하면 (2)(3) 추가.
+
 ## Deferred from /plan-eng-review (2026-04-17)
 
 ### P2 (post-MVP)

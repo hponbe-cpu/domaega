@@ -1,6 +1,10 @@
 # Codingagent
 
-New project. No code yet. Currently at idea-validation stage via `/office-hours`.
+도매가격 투명성 MVP — Korean consumer transparency tool. Naver Smartstore URL → 1688 wholesale price matches on shareable permalink. Next.js 14 + Supabase + Railway worker (to come).
+
+## Design System
+
+Always read `DESIGN.md` before making any visual or UI decisions. All font choices, colors, spacing, and aesthetic direction are defined there. Do not deviate without explicit user approval. In QA mode, flag any code that doesn't match DESIGN.md.
 
 ## Skill routing
 

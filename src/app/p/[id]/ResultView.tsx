@@ -272,12 +272,19 @@ function StatePill({
   return (
     <div className="mt-7 mb-14 flex justify-center">
       <span
-        className={`inline-flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold uppercase tracking-caps-tight text-white ${STATE_CLASS[state]}`}
+        className={`inline-flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold text-white ${STATE_CLASS[state]}`}
       >
-        {STATE_LABELS[state]}
-        {typeof top1 === "number"
-          ? ` · top-1 sim ${top1.toFixed(2)}`
-          : null}
+        <span>{STATE_LABELS[state]}</span>
+        {typeof top1 === "number" ? (
+          <>
+            <span className="opacity-60" aria-hidden>
+              ·
+            </span>
+            <span className="font-mono uppercase tracking-caps-tight tabular-nums">
+              top-1 sim {top1.toFixed(2)}
+            </span>
+          </>
+        ) : null}
       </span>
     </div>
   );

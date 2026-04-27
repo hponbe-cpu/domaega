@@ -14,6 +14,16 @@ export type AnalysisState =
   | "unknown"
   | null;
 
+export type Extracted = {
+  title_ko: string;
+  brand: string | null;
+  price_krw: number | null;
+  category_hint: string | null;
+  search_keywords_zh: string[];
+  confidence: "high" | "medium" | "low";
+  notes: string | null;
+};
+
 export type HeroData = {
   title?: string;
   price?: number;
@@ -35,7 +45,9 @@ export type Match = {
 
 export type Analysis = {
   id: string;
-  url: string;
+  url: string | null;
+  image_path: string | null;
+  extracted: Extracted | null;
   status: AnalysisStatus;
   state: AnalysisState;
   hero_data: HeroData | null;

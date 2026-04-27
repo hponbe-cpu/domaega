@@ -17,8 +17,7 @@ export default function Page() {
             결정하세요.
           </h1>
           <p className="mt-5 text-ink-muted text-base max-w-sm leading-relaxed">
-            네이버 스마트스토어 상품 URL을 붙여 넣으면 중국 도매 시세를
-            보여드립니다.
+            상품 페이지 캡처를 올리면 중국 도매 시세를 보여드립니다.
           </p>
         </section>
 
@@ -27,7 +26,7 @@ export default function Page() {
         </section>
 
         <footer className="mt-24 pt-4 border-t border-rule text-2xs text-ink-muted tracking-[0.04em]">
-          중립적 도매가 시세선 · 네이버 공식 API 사용
+          중립적 도매가 시세선 · 캡처 기반 분석
         </footer>
       </div>
     </main>

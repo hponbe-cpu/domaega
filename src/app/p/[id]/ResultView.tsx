@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import type { Analysis, Match } from "@/types/analysis";
+import type { Analysis, Extracted, Match } from "@/types/analysis";
 
 const STATE_LABELS: Record<NonNullable<Analysis["state"]>, string> = {
   confident_match: "신뢰 높음",
@@ -14,6 +14,18 @@ const STATE_CLASS: Record<NonNullable<Analysis["state"]>, string> = {
   confident_match: "bg-state-confident",
   likely_domestic: "bg-state-domestic",
   unknown: "bg-state-unknown",
+};
+
+const CONFIDENCE_LABELS: Record<Extracted["confidence"], string> = {
+  high: "추출 신뢰도 높음",
+  medium: "추출 신뢰도 보통",
+  low: "추출 신뢰도 낮음",
+};
+
+const CONFIDENCE_CLASS: Record<Extracted["confidence"], string> = {
+  high: "bg-state-confident",
+  medium: "bg-state-domestic",
+  low: "bg-state-unknown",
 };
 
 function formatKRW(n: number): string {
@@ -83,12 +95,22 @@ export default function ResultView({ initial }: { initial: Analysis }) {
           <ConfidentHero row={row} />
         ) : row.status === "completed" && row.state === "likely_domestic" ? (
           <DomesticHero />
+        ) : row.status === "completed" && row.extracted ? (
+          <ExtractedPreview
+            extracted={row.extracted}
+            note={row.confidence_note}
+          />
         ) : row.status === "completed" && row.state === "unknown" ? (
           <UnknownHero note={row.confidence_note} />
         ) : row.status === "no_match_found" ? (
           <NoMatchHero />
         ) : row.status === "scrape_failed" ? (
-          <FailureHero reason="URL 분석 실패. 상품 페이지 구조가 변경되었거나 네트워크 문제일 수 있습니다." />
+          <FailureHero
+            reason={
+              row.confidence_note ??
+              "분석 실패. 다른 캡처로 다시 시도해 주세요."
+            }
+          />
         ) : row.status === "dead_letter" ? (
           <FailureHero reason="처리 지연. 잠시 후 재시도해 주세요." />
         ) : null}
@@ -120,34 +142,39 @@ export default function ResultView({ initial }: { initial: Analysis }) {
 }
 
 function ProductHeader({ row }: { row: Analysis }) {
-  const title = row.hero_data?.title ?? "상품 정보 수집 중";
+  const title = row.hero_data?.title ?? "상품 정보 추출 중";
   const retail = row.hero_data?.price;
-  const mall = row.hero_data?.mallName ?? "네이버 스마트스토어";
+  const brand = row.hero_data?.brand;
+  const category = row.hero_data?.category;
+  const secondary = retail
+    ? formatKRW(retail)
+    : (brand ?? category ?? null);
   return (
     <div className="flex gap-3.5 items-start mb-12 pb-5 border-b border-rule">
       <div
         className="w-14 h-14 flex-shrink-0 rounded-[2px] bg-rule"
         style={
           row.hero_data?.image
-            ? { backgroundImage: `url(${row.hero_data.image})`, backgroundSize: "cover", backgroundPosition: "center" }
+            ? {
+                backgroundImage: `url(${row.hero_data.image})`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+              }
             : undefined
         }
       />
       <div>
         <div className="text-sm font-medium leading-snug mb-1">{title}</div>
-        <div className="text-sm text-ink-muted">
-          {retail ? (
-            <>
-              <span className="font-mono tabular-nums">
-                {formatKRW(retail)}
-              </span>
-              {" · "}
-              {mall}
-            </>
-          ) : (
-            mall
-          )}
-        </div>
+        {secondary ? (
+          <div className="text-sm text-ink-muted">
+            {retail ? (
+              <span className="font-mono tabular-nums">{secondary}</span>
+            ) : (
+              secondary
+            )}
+            {retail && brand ? <> · {brand}</> : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -158,7 +185,7 @@ function PendingHero({ status }: { status: Analysis["status"] }) {
     status === "pending"
       ? "대기 중"
       : status === "scraping"
-        ? "상품 정보 수집 중"
+        ? "캡처 분석 중"
         : "도매 매칭 중";
   return (
     <section className="text-center py-16">
@@ -169,7 +196,7 @@ function PendingHero({ status }: { status: Analysis["status"] }) {
         {label}…
       </div>
       <div className="mt-4 text-sm text-ink-muted">
-        최대 90초. 페이지를 닫아도 결과는 저장됩니다.
+        최대 30초. 페이지를 닫아도 결과는 저장됩니다.
       </div>
     </section>
   );
@@ -177,7 +204,6 @@ function PendingHero({ status }: { status: Analysis["status"] }) {
 
 function ConfidentHero({ row }: { row: Analysis }) {
   const range = row.matches ? priceRange(row.matches) : null;
-  // Rough CNY→KRW for context (MVP — no FX API yet, use static rate 186).
   const fxRate = 186;
   return (
     <section className="text-center py-10">
@@ -211,6 +237,75 @@ function DomesticHero() {
       </div>
       <StatePill state="likely_domestic" top1={null} />
     </section>
+  );
+}
+
+function ExtractedPreview({
+  extracted,
+  note,
+}: {
+  extracted: Extracted;
+  note: string | null;
+}) {
+  return (
+    <section className="py-6">
+      <div className="text-xs tracking-[0.2em] uppercase text-ink-muted mb-5 text-center">
+        추출 정보
+      </div>
+      <dl className="border-t border-rule">
+        {extracted.brand ? (
+          <Row label="브랜드" value={extracted.brand} />
+        ) : null}
+        {extracted.price_krw ? (
+          <Row label="판매가" value={formatKRW(extracted.price_krw)} mono />
+        ) : null}
+        {extracted.category_hint ? (
+          <Row label="카테고리" value={extracted.category_hint} />
+        ) : null}
+        <Row
+          label="1688 키워드"
+          value={extracted.search_keywords_zh.join(" · ")}
+        />
+        {extracted.notes ? (
+          <Row label="비고" value={extracted.notes} />
+        ) : null}
+      </dl>
+      <div className="mt-7 mb-10 flex justify-center">
+        <span
+          className={`inline-flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold text-white ${CONFIDENCE_CLASS[extracted.confidence]}`}
+        >
+          <span>{CONFIDENCE_LABELS[extracted.confidence]}</span>
+        </span>
+      </div>
+      {note ? (
+        <div className="text-sm text-ink-muted max-w-md mx-auto leading-relaxed text-center">
+          {note}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function Row({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-[120px_1fr] gap-3.5 py-3 border-b border-rule">
+      <dt className="text-xs tracking-caps uppercase font-semibold text-ink-muted self-center">
+        {label}
+      </dt>
+      <dd
+        className={`text-sm leading-snug ${mono ? "font-mono tabular-nums" : ""}`}
+      >
+        {value}
+      </dd>
+    </div>
   );
 }
 
@@ -311,7 +406,11 @@ function MatchList({ matches }: { matches: Match[] }) {
             className="w-10 h-10 rounded-[2px] bg-rule"
             style={
               m.image
-                ? { backgroundImage: `url(${m.image})`, backgroundSize: "cover", backgroundPosition: "center" }
+                ? {
+                    backgroundImage: `url(${m.image})`,
+                    backgroundSize: "cover",
+                    backgroundPosition: "center",
+                  }
                 : undefined
             }
           />

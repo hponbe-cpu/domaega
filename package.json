@@ -10,10 +10,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.91.1",
     "@supabase/ssr": "^0.5",
     "@supabase/supabase-js": "^2",
     "next": "^14",
+    "openai": "^6.34.0",
     "react": "^18",
     "react-dom": "^18",
     "zod": "^4.3.6"

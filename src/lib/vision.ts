@@ -1,26 +1,21 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { z } from "zod";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 
-const anthropic = new Anthropic();
+const client = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: process.env.OPENROUTER_API_KEY ?? "",
+});
+
+const MODEL = process.env.OPENROUTER_MODEL ?? "google/gemini-2.0-flash-exp:free";
 
 export const ExtractedSchema = z.object({
-  title_ko: z.string().describe("상품 제목 (한국어)"),
-  brand: z.string().nullable().describe("브랜드명. 명확하지 않으면 null"),
-  price_krw: z.number().nullable().describe("판매가 (원). 정가/할인가 함께 보이면 할인가. 없으면 null"),
-  category_hint: z
-    .string()
-    .nullable()
-    .describe("카테고리 추정 (예: 패션 잡화, 주방용품, 가전, 뷰티)"),
-  search_keywords_zh: z
-    .array(z.string())
-    .describe(
-      "1688 검색용 중국어 키워드 3-5개. 한국어 직역이 아닌 1688 실사용 일반 용어. 영문 브랜드는 영문 그대로",
-    ),
-  confidence: z
-    .enum(["high", "medium", "low"])
-    .describe("추출 신뢰도. high=모든 핵심 필드 명확, low=가격/제목이 흐림"),
-  notes: z.string().nullable().describe("추출 시 주의사항. 없으면 null"),
+  title_ko: z.string(),
+  brand: z.string().nullable(),
+  price_krw: z.number().nullable(),
+  category_hint: z.string().nullable(),
+  search_keywords_zh: z.array(z.string()),
+  confidence: z.enum(["high", "medium", "low"]),
+  notes: z.string().nullable(),
 });
 
 export type Extracted = z.infer<typeof ExtractedSchema>;
@@ -31,53 +26,57 @@ const SYSTEM_PROMPT = `당신은 한국 온라인 쇼핑몰 캡처 화면에서 
 
 추출 규칙:
 - 상품 제목은 광고 카피나 옵션 텍스트가 아닌 본문에 표기된 정식 명칭을 사용합니다.
-- 가격은 판매가(현재 결제 시 청구되는 가격)를 추출합니다. 정가/할인가 함께 보이면 할인가를 사용합니다. 옵션별 추가금은 무시합니다.
+- 가격은 판매가(현재 결제 시 청구되는 가격)를 추출합니다. 정가/할인가 함께 보이면 할인가를 사용합니다. 옵션별 추가금은 무시합니다. 숫자만 반환(원 단위, 콤마 없이).
 - 브랜드는 셀러명(스토어 이름)이 아닌 제조사 또는 상품 브랜드입니다. 명확하지 않으면 null.
-- search_keywords_zh는 이 상품을 1688에서 찾기 위한 중국어 키워드입니다. 한국어 제목을 직역하지 말고 1688에서 실제 통용되는 일반 용어로 변환하세요. 예: "무선 이어폰" → ["蓝牙耳机", "无线耳机", "TWS耳机"]. 나이키/애플 같은 영문 브랜드명은 중국어로 번역하지 말고 영문 그대로 사용합니다.
-- 추출이 어렵거나 일부 필드가 흐릿하면 confidence를 medium 또는 low로 설정하고 notes에 사유를 적습니다.`;
+- search_keywords_zh는 이 상품을 1688에서 찾기 위한 중국어 키워드 3-5개입니다. 한국어 직역이 아닌 1688에서 통용되는 일반 용어로 변환하세요. 예: "무선 이어폰" → ["蓝牙耳机", "无线耳机", "TWS耳机"]. 나이키/애플 같은 영문 브랜드는 영문 그대로.
+- 추출이 어렵거나 일부 필드가 흐릿하면 confidence를 medium 또는 low로 설정하고 notes에 사유를 적습니다.
+
+응답은 반드시 다음 JSON 스키마를 따릅니다. 다른 설명 없이 JSON만 반환하세요:
+{
+  "title_ko": string,
+  "brand": string | null,
+  "price_krw": number | null,
+  "category_hint": string | null,
+  "search_keywords_zh": string[],
+  "confidence": "high" | "medium" | "low",
+  "notes": string | null
+}`;
 
 export async function extractFromImage(
   imageBuffer: Buffer,
   mediaType: "image/png" | "image/jpeg" | "image/webp",
 ): Promise<Extracted> {
-  const base64 = imageBuffer.toString("base64");
-  const response = await anthropic.messages.parse({
-    model: "claude-opus-4-7",
-    max_tokens: 1024,
-    system: [
-      {
-        type: "text",
-        text: SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral" },
-      },
-    ],
+  if (!process.env.OPENROUTER_API_KEY) {
+    throw new Error("OPENROUTER_API_KEY 미설정");
+  }
+  const dataUrl = `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
+  const response = await client.chat.completions.create({
+    model: MODEL,
+    response_format: { type: "json_object" },
     messages: [
+      { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
         content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: mediaType,
-              data: base64,
-            },
-          },
-          {
-            type: "text",
-            text: "이 캡처에서 상품 정보를 추출하세요.",
-          },
+          { type: "image_url", image_url: { url: dataUrl } },
+          { type: "text", text: "이 캡처에서 상품 정보를 JSON으로 추출하세요." },
         ],
       },
     ],
-    output_config: {
-      format: zodOutputFormat(ExtractedSchema),
-    },
   });
-  if (!response.parsed_output) {
-    throw new Error(
-      `Vision 추출 결과 파싱 실패 (stop_reason: ${response.stop_reason})`,
-    );
+  const text = response.choices[0]?.message?.content;
+  if (!text) {
+    throw new Error("Vision 응답 비어있음");
   }
-  return response.parsed_output;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error(`Vision 응답이 JSON이 아님: ${text.slice(0, 200)}`);
+  }
+  const parsed = ExtractedSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`Vision 출력 스키마 불일치: ${parsed.error.message}`);
+  }
+  return parsed.data;
 }

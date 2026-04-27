@@ -11,7 +11,7 @@
   "dependencies": {
     "dotenv": "^16",
     "express": "^4",
-    "playwright": "^1.49",
+    "playwright": "1.59.1",
     "tsx": "^4"
   },
   "devDependencies": {

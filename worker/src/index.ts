@@ -37,7 +37,24 @@ app.post("/scrape", async (req, res) => {
     return;
   }
   const startedAt = Date.now();
-  const result = await scrape(url);
+  let result;
+  try {
+    result = await scrape(url);
+  } catch (e) {
+    const reason = (e as Error).message;
+    console.log(
+      JSON.stringify({
+        msg: "scrape",
+        url,
+        ok: false,
+        reason,
+        elapsedMs: Date.now() - startedAt,
+        threw: true,
+      }),
+    );
+    res.status(500).json({ ok: false, reason });
+    return;
+  }
   const elapsedMs = Date.now() - startedAt;
   console.log(
     JSON.stringify({

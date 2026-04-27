@@ -2,6 +2,11 @@ import type { HeroData } from "@/types/analysis";
 
 const SEARCH_API = "https://openapi.naver.com/v1/search/shop.json";
 
+// URL productId(셀러 상품 ID)와 API item productId(네이버 쇼핑 카탈로그 ID)가
+// 다른 스키마라 직접 일치 불가. 제목 유사도로 best match를 고른다.
+// 50-URL 평가셋 들어오면 threshold 재튜닝 — 현재는 보수적 첫 추정값.
+const TITLE_SIM_THRESHOLD = 0.45;
+
 type NaverItem = {
   title: string;
   link: string;
@@ -20,8 +25,8 @@ type NaverItem = {
 };
 
 export type NaverStageResult =
-  | { ok: true; hero_data: HeroData }
-  | { ok: false; reason: string };
+  | { ok: true; hero_data: HeroData; top1_similarity: number }
+  | { ok: false; reason: string; top1_similarity?: number };
 
 export function extractProductId(url: string): string | null {
   const m = url.match(/\/products\/(\d+)/);
@@ -40,12 +45,69 @@ function extractTitle(html: string): string {
 function cleanTitle(raw: string): string {
   return raw
     .replace(/\s*[:|]\s*네이버[^\n]*$/i, "")
+    .replace(/\s*[:|]\s*스마트스토어[^\n]*$/i, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, "");
+}
+
+function tokenize(s: string): string[] {
+  return stripTags(s)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function jaccard(a: string[], b: string[]): number {
+  if (!a.length || !b.length) return 0;
+  const sa = new Set(a);
+  const sb = new Set(b);
+  let inter = 0;
+  for (const t of sa) if (sb.has(t)) inter++;
+  const union = sa.size + sb.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+function bigrams(s: string): Set<string> {
+  const norm = stripTags(s).toLowerCase().replace(/\s+/g, "");
+  const set = new Set<string>();
+  for (let i = 0; i < norm.length - 1; i++) {
+    set.add(norm.slice(i, i + 2));
+  }
+  return set;
+}
+
+function dice(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return (2 * inter) / (a.size + b.size);
+}
+
+export function similarity(a: string, b: string): number {
+  const j = jaccard(tokenize(a), tokenize(b));
+  const d = dice(bigrams(a), bigrams(b));
+  return 0.4 * j + 0.6 * d;
+}
+
+export function findBestMatch(
+  urlTitle: string,
+  items: NaverItem[],
+): { match: NaverItem | null; score: number } {
+  let best: NaverItem | null = null;
+  let bestScore = 0;
+  for (const it of items) {
+    const s = similarity(urlTitle, it.title);
+    if (s > bestScore) {
+      bestScore = s;
+      best = it;
+    }
+  }
+  return { match: best, score: bestScore };
 }
 
 async function fetchHtml(url: string): Promise<string> {
@@ -122,11 +184,12 @@ export async function runNaverStage(url: string): Promise<NaverStageResult> {
     };
   }
 
-  const match = items.find((it) => it.productId === pid);
-  if (!match) {
+  const { match, score } = findBestMatch(title, items);
+  if (!match || score < TITLE_SIM_THRESHOLD) {
     return {
       ok: false,
-      reason: `검색 결과 ${items.length}건 중 productId ${pid} 미일치`,
+      reason: `검색 결과 ${items.length}건 중 매칭 신뢰도 부족 (top1=${score.toFixed(2)}, 임계 ${TITLE_SIM_THRESHOLD})`,
+      top1_similarity: score,
     };
   }
 
@@ -149,5 +212,5 @@ export async function runNaverStage(url: string): Promise<NaverStageResult> {
     mallName: match.mallName || undefined,
   };
 
-  return { ok: true, hero_data };
+  return { ok: true, hero_data, top1_similarity: score };
 }

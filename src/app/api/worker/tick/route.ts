@@ -32,17 +32,19 @@ async function processOne() {
   const result = await runNaverStage(locked.url);
 
   if (!result.ok) {
+    const isMatchFailure = result.top1_similarity !== undefined;
     await admin
       .from("product_analyses")
       .update({
-        status: "scrape_failed",
+        status: isMatchFailure ? "no_match_found" : "scrape_failed",
         confidence_note: result.reason,
+        top1_similarity: result.top1_similarity ?? null,
       })
       .eq("id", locked.id);
     return {
       ok: true,
       id: locked.id,
-      status: "scrape_failed",
+      status: isMatchFailure ? "no_match_found" : "scrape_failed",
       reason: result.reason,
     };
   }
@@ -53,6 +55,7 @@ async function processOne() {
       status: "completed",
       state: "unknown",
       hero_data: result.hero_data,
+      top1_similarity: result.top1_similarity,
       confidence_note:
         "1688 도매 매칭은 다음 업데이트에서 활성화됩니다. 네이버 상품 정보만 표시됩니다.",
     })

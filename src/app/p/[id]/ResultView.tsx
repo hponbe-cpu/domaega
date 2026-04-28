@@ -47,7 +47,7 @@ function priceRange(matches: Match[]): { min: number; max: number } | null {
 
 export default function ResultView({ initial }: { initial: Analysis }) {
   const [row, setRow] = useState<Analysis>(initial);
-  const matchingTickFired = useRef(false);
+  const tickFiredFor = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (
@@ -79,10 +79,14 @@ export default function ResultView({ initial }: { initial: Analysis }) {
     };
   }, [row.id, row.status]);
 
-  // matching 단계는 별도 tick으로 처리 (vision tick과 분리해 Vercel 60s 한도 회피).
+  // pending과 matching 진입 시 tick 발사. form에서 띄우면 router.push가 fetch를 취소하므로
+  // ResultView mount 후 안정된 컨텍스트에서 트리거하는 게 안전.
   useEffect(() => {
-    if (row.status === "matching" && !matchingTickFired.current) {
-      matchingTickFired.current = true;
+    if (
+      (row.status === "pending" || row.status === "matching") &&
+      !tickFiredFor.current.has(row.status)
+    ) {
+      tickFiredFor.current.add(row.status);
       fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
     }
   }, [row.status]);

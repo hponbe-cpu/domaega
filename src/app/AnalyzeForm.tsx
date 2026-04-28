@@ -43,7 +43,6 @@ export default function AnalyzeForm() {
         setSubmitting(false);
         return;
       }
-      fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
       router.push(data.permalink);
     } catch {
       setError("네트워크 오류. 다시 시도해주세요.");

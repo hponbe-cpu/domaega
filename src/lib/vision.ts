@@ -4,6 +4,8 @@ import { z } from "zod";
 const client = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
   apiKey: process.env.OPENROUTER_API_KEY ?? "",
+  timeout: 30_000,
+  maxRetries: 0,
 });
 
 const MODEL = process.env.OPENROUTER_MODEL ?? "google/gemma-4-31b-it:free";

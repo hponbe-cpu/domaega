@@ -48,6 +48,7 @@ function priceRange(matches: Match[]): { min: number; max: number } | null {
 export default function ResultView({ initial }: { initial: Analysis }) {
   const [row, setRow] = useState<Analysis>(initial);
   const tickFiredFor = useRef<Set<string>>(new Set());
+  const initialFireDone = useRef(false);
 
   useEffect(() => {
     if (
@@ -79,13 +80,22 @@ export default function ResultView({ initial }: { initial: Analysis }) {
     };
   }, [row.id, row.status]);
 
-  // pending과 matching 진입 시 tick 발사. form에서 띄우면 router.push가 fetch를 취소하므로
-  // ResultView mount 후 안정된 컨텍스트에서 트리거하는 게 안전.
+  // mount 시 진행 중 상태면 복구 tick 1회 발사. 이후엔 matching 전환 시에만 후속 tick 발사 —
+  // pending → scraping 자연 전환 시점에 중복 트리거되지 않도록 분리.
   useEffect(() => {
-    if (
-      (row.status === "pending" || row.status === "matching") &&
-      !tickFiredFor.current.has(row.status)
-    ) {
+    if (!initialFireDone.current) {
+      initialFireDone.current = true;
+      if (
+        row.status === "pending" ||
+        row.status === "scraping" ||
+        row.status === "matching"
+      ) {
+        tickFiredFor.current.add(row.status);
+        fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
+      }
+      return;
+    }
+    if (row.status === "matching" && !tickFiredFor.current.has(row.status)) {
       tickFiredFor.current.add(row.status);
       fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
     }

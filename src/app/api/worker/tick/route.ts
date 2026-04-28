@@ -19,30 +19,53 @@ function mediaTypeFromPath(
 }
 
 async function runVisionStage(admin: SupabaseClient) {
-  const { data: candidate } = await admin
+  // pending 우선 시도 + lock
+  const { data: pending } = await admin
     .from("product_analyses")
     .select("id, image_path")
     .eq("status", "pending")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (!candidate?.image_path) return null;
 
-  const { data: locked } = await admin
-    .from("product_analyses")
-    .update({ status: "scraping" })
-    .eq("id", candidate.id)
-    .eq("status", "pending")
-    .select("id, image_path")
-    .maybeSingle();
-  if (!locked?.image_path) return { ok: true, picked: 0, reason: "race-lost" };
+  let targetId: string | null = null;
+  let imagePath: string | null = null;
+
+  if (pending?.image_path) {
+    const { data: locked } = await admin
+      .from("product_analyses")
+      .update({ status: "scraping" })
+      .eq("id", pending.id)
+      .eq("status", "pending")
+      .select("id, image_path")
+      .maybeSingle();
+    if (locked?.image_path) {
+      targetId = locked.id;
+      imagePath = locked.image_path;
+    }
+  }
+
+  // pending 없으면 scraping에 박혀있는 행도 회수 (이전 tick이 timeout으로 죽은 케이스).
+  // 동시 재시도 가능성은 마지막 write가 이김으로 흡수.
+  if (!targetId) {
+    const { data: stuck } = await admin
+      .from("product_analyses")
+      .select("id, image_path")
+      .eq("status", "scraping")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (stuck?.image_path) {
+      targetId = stuck.id;
+      imagePath = stuck.image_path;
+    }
+  }
+
+  if (!targetId || !imagePath) return null;
 
   try {
-    const buf = await downloadScreenshot(locked.image_path);
-    const extracted = await extractFromImage(
-      buf,
-      mediaTypeFromPath(locked.image_path),
-    );
+    const buf = await downloadScreenshot(imagePath);
+    const extracted = await extractFromImage(buf, mediaTypeFromPath(imagePath));
     const hero: HeroData = {
       title: extracted.title_ko,
       price: extracted.price_krw ?? undefined,
@@ -52,15 +75,15 @@ async function runVisionStage(admin: SupabaseClient) {
     await admin
       .from("product_analyses")
       .update({ status: "matching", hero_data: hero, extracted })
-      .eq("id", locked.id);
-    return { ok: true, id: locked.id, status: "matching" };
+      .eq("id", targetId);
+    return { ok: true, id: targetId, status: "matching" };
   } catch (e) {
     const reason = (e as Error).message;
     await admin
       .from("product_analyses")
       .update({ status: "scrape_failed", confidence_note: reason })
-      .eq("id", locked.id);
-    return { ok: true, id: locked.id, status: "scrape_failed", reason };
+      .eq("id", targetId);
+    return { ok: true, id: targetId, status: "scrape_failed", reason };
   }
 }
 

@@ -3,7 +3,8 @@ import { extractFromImage } from "@/lib/vision";
 import { downloadScreenshot } from "@/lib/storage";
 import { search1688 } from "@/lib/worker-client";
 import { NextResponse } from "next/server";
-import type { HeroData, Match } from "@/types/analysis";
+import type { HeroData, Match, Extracted } from "@/types/analysis";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,41 +18,32 @@ function mediaTypeFromPath(
   return "image/jpeg";
 }
 
-async function processOne() {
-  const admin = createAdminClient();
-
-  const { data: candidate, error: selErr } = await admin
+async function runVisionStage(admin: SupabaseClient) {
+  const { data: candidate } = await admin
     .from("product_analyses")
     .select("id, image_path")
     .eq("status", "pending")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (selErr) return { ok: false, error: selErr.message };
-  if (!candidate?.image_path) return { ok: true, picked: 0 };
+  if (!candidate?.image_path) return null;
 
-  const { data: locked, error: lockErr } = await admin
+  const { data: locked } = await admin
     .from("product_analyses")
     .update({ status: "scraping" })
     .eq("id", candidate.id)
     .eq("status", "pending")
     .select("id, image_path")
     .maybeSingle();
-  if (lockErr) return { ok: false, error: lockErr.message };
-  if (!locked?.image_path) {
-    return { ok: true, picked: 0, reason: "race-lost" };
-  }
+  if (!locked?.image_path) return { ok: true, picked: 0, reason: "race-lost" };
 
-  // Stage 1: Vision 추출
-  let extracted;
-  let hero: HeroData;
   try {
     const buf = await downloadScreenshot(locked.image_path);
-    extracted = await extractFromImage(
+    const extracted = await extractFromImage(
       buf,
       mediaTypeFromPath(locked.image_path),
     );
-    hero = {
+    const hero: HeroData = {
       title: extracted.title_ko,
       price: extracted.price_krw ?? undefined,
       brand: extracted.brand ?? undefined,
@@ -61,6 +53,7 @@ async function processOne() {
       .from("product_analyses")
       .update({ status: "matching", hero_data: hero, extracted })
       .eq("id", locked.id);
+    return { ok: true, id: locked.id, status: "matching" };
   } catch (e) {
     const reason = (e as Error).message;
     await admin
@@ -69,8 +62,19 @@ async function processOne() {
       .eq("id", locked.id);
     return { ok: true, id: locked.id, status: "scrape_failed", reason };
   }
+}
 
-  // Stage 2: 1688 검색. zh 키워드 비면 한국어 제목으로 fallback (1688이 영문 브랜드/숫자는 잡음).
+async function runMatchingStage(admin: SupabaseClient) {
+  const { data: row } = await admin
+    .from("product_analyses")
+    .select("id, extracted")
+    .eq("status", "matching")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!row?.extracted) return null;
+
+  const extracted = row.extracted as Extracted;
   const zhParts = extracted.search_keywords_zh
     .slice(0, 3)
     .map((s) => s.trim())
@@ -84,9 +88,10 @@ async function processOne() {
         state: "unknown",
         confidence_note: "검색어 추출 실패",
       })
-      .eq("id", locked.id);
-    return { ok: true, id: locked.id, status: "completed", reason: "no-query" };
+      .eq("id", row.id);
+    return { ok: true, id: row.id, status: "completed", reason: "no-query" };
   }
+
   let items;
   try {
     items = await search1688(query);
@@ -99,14 +104,8 @@ async function processOne() {
         state: "unknown",
         confidence_note: `1688 검색 실패: ${reason}`,
       })
-      .eq("id", locked.id);
-    return {
-      ok: true,
-      id: locked.id,
-      status: "completed",
-      state: "unknown",
-      reason,
-    };
+      .eq("id", row.id);
+    return { ok: true, id: row.id, status: "completed", reason };
   }
 
   if (items.length === 0) {
@@ -117,8 +116,8 @@ async function processOne() {
         state: "unknown",
         confidence_note: `1688 검색 결과 없음 (검색어: ${query})`,
       })
-      .eq("id", locked.id);
-    return { ok: true, id: locked.id, status: "completed", count: 0 };
+      .eq("id", row.id);
+    return { ok: true, id: row.id, status: "completed", count: 0 };
   }
 
   const matches: Match[] = items.map((it) => ({
@@ -137,15 +136,24 @@ async function processOne() {
       matches,
       confidence_note: null,
     })
-    .eq("id", locked.id);
+    .eq("id", row.id);
 
   return {
     ok: true,
-    id: locked.id,
+    id: row.id,
     status: "completed",
     state: "confident_match",
     count: matches.length,
   };
+}
+
+async function processOne() {
+  const admin = createAdminClient();
+  const visionOut = await runVisionStage(admin);
+  if (visionOut) return visionOut;
+  const matchingOut = await runMatchingStage(admin);
+  if (matchingOut) return matchingOut;
+  return { ok: true, picked: 0 };
 }
 
 export async function POST() {

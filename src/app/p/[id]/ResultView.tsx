@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { Analysis, Extracted, Match } from "@/types/analysis";
 
@@ -47,6 +47,7 @@ function priceRange(matches: Match[]): { min: number; max: number } | null {
 
 export default function ResultView({ initial }: { initial: Analysis }) {
   const [row, setRow] = useState<Analysis>(initial);
+  const matchingTickFired = useRef(false);
 
   useEffect(() => {
     if (
@@ -77,6 +78,14 @@ export default function ResultView({ initial }: { initial: Analysis }) {
       supabase.removeChannel(channel);
     };
   }, [row.id, row.status]);
+
+  // matching 단계는 별도 tick으로 처리 (vision tick과 분리해 Vercel 60s 한도 회피).
+  useEffect(() => {
+    if (row.status === "matching" && !matchingTickFired.current) {
+      matchingTickFired.current = true;
+      fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
+    }
+  }, [row.status]);
 
   return (
     <main className="min-h-screen px-6 pt-10 pb-16 sm:px-8 sm:pt-14">
@@ -196,7 +205,7 @@ function PendingHero({ status }: { status: Analysis["status"] }) {
         {label}…
       </div>
       <div className="mt-4 text-sm text-ink-muted">
-        최대 30초. 페이지를 닫아도 결과는 저장됩니다.
+        최대 1분. 페이지를 닫아도 결과는 저장됩니다.
       </div>
     </section>
   );

@@ -6,7 +6,7 @@ const client = new OpenAI({
   apiKey: process.env.OPENROUTER_API_KEY ?? "",
 });
 
-const MODEL = process.env.OPENROUTER_MODEL ?? "google/gemini-2.0-flash-exp:free";
+const MODEL = process.env.OPENROUTER_MODEL ?? "google/gemma-4-31b-it:free";
 
 export const ExtractedSchema = z.object({
   title_ko: z.string(),

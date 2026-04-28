@@ -1,19 +1,24 @@
-import { chromium, type Browser } from "playwright";
+// playwright-extra + stealth로 1688의 __baxia__ 헤드리스 탐지 우회.
+import { chromium as chromiumExtra } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import type { Browser } from "playwright";
 import { config } from "./config.js";
+
+chromiumExtra.use(StealthPlugin());
 
 let browser: Browser | null = null;
 let consecutiveFailures = 0;
 
 async function getBrowser(): Promise<Browser> {
   if (browser && browser.isConnected()) return browser;
-  browser = await chromium.launch({
+  browser = (await chromiumExtra.launch({
     headless: true,
     proxy: {
       server: `http://${config.proxy.host}:${config.proxy.port}`,
       username: config.proxy.user,
       password: config.proxy.pass,
     },
-  });
+  })) as Browser;
   return browser;
 }
 
@@ -42,6 +47,7 @@ export async function search1688(query: string): Promise<Search1688Result> {
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     locale: "zh-CN",
+    timezoneId: "Asia/Shanghai",
     viewport: { width: 1280, height: 800 },
   });
   const page = await ctx.newPage();

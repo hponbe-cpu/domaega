@@ -73,6 +73,8 @@ const SYSTEM_PROMPT = `당신은 한국 온라인 쇼핑몰 캡처 화면에서 
   "notes": string | null
 }`;
 
+const HARD_TIMEOUT_MS = 25_000;
+
 export async function extractFromImage(
   imageBuffer: Buffer,
   mediaType: "image/png" | "image/jpeg" | "image/webp",
@@ -81,20 +83,39 @@ export async function extractFromImage(
     throw new Error("OPENROUTER_API_KEY 미설정");
   }
   const dataUrl = `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
-  const response = await client.chat.completions.create({
-    model: MODEL,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+  // SDK 내부 timeout이 OpenRouter 무료 큐 대기에 잘 안 먹혀 wall-clock guard 추가.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HARD_TIMEOUT_MS);
+  let response;
+  try {
+    response = await client.chat.completions.create(
       {
-        role: "user",
-        content: [
-          { type: "image_url", image_url: { url: dataUrl } },
-          { type: "text", text: "이 캡처에서 상품 정보를 JSON으로 추출하세요." },
+        model: MODEL,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: dataUrl } },
+              {
+                type: "text",
+                text: "이 캡처에서 상품 정보를 JSON으로 추출하세요.",
+              },
+            ],
+          },
         ],
       },
-    ],
-  });
+      { signal: controller.signal },
+    );
+  } catch (e) {
+    if (controller.signal.aborted) {
+      throw new Error(`Vision 호출 타임아웃 (${HARD_TIMEOUT_MS / 1000}s)`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   const text = response.choices[0]?.message?.content;
   if (!text) {
     throw new Error("Vision 응답 비어있음");

@@ -8,15 +8,25 @@ const client = new OpenAI({
 
 const MODEL = process.env.OPENROUTER_MODEL ?? "google/gemma-4-31b-it:free";
 
-// 모델이 nullable 필드를 null로 명시하지 않고 키를 누락하는 경우가 있어 nullish + transform으로 정규화.
+// 모델이 nullable 필드를 null로 명시 안 하거나 다른 타입(배열/문자열-숫자 등)으로 반환하는 경우가
+// 있어 매우 관대한 union + transform으로 정규화. 무료 모델일수록 형식 안정성이 떨어짐.
 const nullableString = z
-  .string()
-  .nullish()
-  .transform((v) => v ?? null);
+  .union([z.string(), z.array(z.string()), z.null(), z.undefined()])
+  .transform((v) => {
+    if (typeof v === "string") return v.trim() || null;
+    if (Array.isArray(v)) return v.filter(Boolean).join(", ") || null;
+    return null;
+  });
 const nullableNumber = z
-  .number()
-  .nullish()
-  .transform((v) => v ?? null);
+  .union([z.number(), z.string(), z.null(), z.undefined()])
+  .transform((v) => {
+    if (typeof v === "number") return Number.isFinite(v) ? v : null;
+    if (typeof v === "string") {
+      const n = parseFloat(v.replace(/[^0-9.-]/g, ""));
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  });
 
 export const ExtractedSchema = z.object({
   title_ko: z.string(),
@@ -46,6 +56,9 @@ const SYSTEM_PROMPT = `당신은 한국 온라인 쇼핑몰 캡처 화면에서 
 - 브랜드는 셀러명(스토어 이름)이 아닌 제조사 또는 상품 브랜드입니다. 명확하지 않으면 null.
 - search_keywords_zh는 이 상품을 1688에서 찾기 위한 중국어 키워드 3-5개입니다. 한국어 직역이 아닌 1688에서 통용되는 일반 용어로 변환하세요. 예: "무선 이어폰" → ["蓝牙耳机", "无线耳机", "TWS耳机"]. 나이키/애플 같은 영문 브랜드는 영문 그대로.
 - 추출이 어렵거나 일부 필드가 흐릿하면 confidence를 medium 또는 low로 설정하고 notes에 사유를 적습니다.
+- title_ko, brand, category_hint, notes는 반드시 단일 문자열 또는 null. 절대 배열로 반환하지 마세요. 여러 후보가 있으면 가장 대표적인 하나만 선택.
+- price_krw는 반드시 숫자(콤마/원/통화기호 없이) 또는 null. "12,500원" 같은 문자열 금지.
+- search_keywords_zh만 문자열 배열.
 
 응답은 반드시 다음 JSON 스키마를 따릅니다. 다른 설명 없이 JSON만 반환하세요:
 {

@@ -1,22 +1,6 @@
 import express from "express";
 import { config } from "./config.js";
-import { scrape } from "./scrape.js";
-
-const SMARTSTORE_HOSTS = new Set([
-  "smartstore.naver.com",
-  "m.smartstore.naver.com",
-  "brand.naver.com",
-  "shopping.naver.com",
-]);
-
-function isAllowedUrl(u: string): boolean {
-  try {
-    const parsed = new URL(u);
-    return SMARTSTORE_HOSTS.has(parsed.hostname);
-  } catch {
-    return false;
-  }
-}
+import { search1688 } from "./search.js";
 
 const app = express();
 app.use(express.json({ limit: "16kb" }));
@@ -25,27 +9,27 @@ app.get("/healthz", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/scrape", async (req, res) => {
+app.post("/search1688", async (req, res) => {
   const auth = req.header("authorization") ?? "";
   if (auth !== `Bearer ${config.sharedSecret}`) {
     res.status(401).json({ ok: false, reason: "unauthorized" });
     return;
   }
-  const url = req.body?.url;
-  if (typeof url !== "string" || !isAllowedUrl(url)) {
-    res.status(400).json({ ok: false, reason: "invalid url" });
+  const query = req.body?.query;
+  if (typeof query !== "string" || query.trim().length === 0) {
+    res.status(400).json({ ok: false, reason: "query (string) required" });
     return;
   }
   const startedAt = Date.now();
   let result;
   try {
-    result = await scrape(url);
+    result = await search1688(query);
   } catch (e) {
     const reason = (e as Error).message;
     console.log(
       JSON.stringify({
-        msg: "scrape",
-        url,
+        msg: "search1688",
+        query,
         ok: false,
         reason,
         elapsedMs: Date.now() - startedAt,
@@ -58,11 +42,11 @@ app.post("/scrape", async (req, res) => {
   const elapsedMs = Date.now() - startedAt;
   console.log(
     JSON.stringify({
-      msg: "scrape",
-      url,
+      msg: "search1688",
+      query,
       ok: result.ok,
       reason: result.ok ? undefined : result.reason,
-      status: "status" in result ? result.status : undefined,
+      count: result.ok ? result.results.length : 0,
       elapsedMs,
     }),
   );

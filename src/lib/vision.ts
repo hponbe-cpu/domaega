@@ -8,14 +8,24 @@ const client = new OpenAI({
 
 const MODEL = process.env.OPENROUTER_MODEL ?? "google/gemma-4-31b-it:free";
 
+// 모델이 nullable 필드를 null로 명시하지 않고 키를 누락하는 경우가 있어 nullish + transform으로 정규화.
+const nullableString = z
+  .string()
+  .nullish()
+  .transform((v) => v ?? null);
+const nullableNumber = z
+  .number()
+  .nullish()
+  .transform((v) => v ?? null);
+
 export const ExtractedSchema = z.object({
   title_ko: z.string(),
-  brand: z.string().nullable(),
-  price_krw: z.number().nullable(),
-  category_hint: z.string().nullable(),
-  search_keywords_zh: z.array(z.string()),
-  confidence: z.enum(["high", "medium", "low"]),
-  notes: z.string().nullable(),
+  brand: nullableString,
+  price_krw: nullableNumber,
+  category_hint: nullableString,
+  search_keywords_zh: z.array(z.string()).default([]),
+  confidence: z.enum(["high", "medium", "low"]).default("medium"),
+  notes: nullableString,
 });
 
 export type Extracted = z.infer<typeof ExtractedSchema>;

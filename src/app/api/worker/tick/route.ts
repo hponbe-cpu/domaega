@@ -18,51 +18,11 @@ function mediaTypeFromPath(
   return "image/jpeg";
 }
 
-async function runVisionStage(admin: SupabaseClient) {
-  // pending 우선 시도 + lock
-  const { data: pending } = await admin
-    .from("product_analyses")
-    .select("id, image_path")
-    .eq("status", "pending")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  let targetId: string | null = null;
-  let imagePath: string | null = null;
-
-  if (pending?.image_path) {
-    const { data: locked } = await admin
-      .from("product_analyses")
-      .update({ status: "scraping" })
-      .eq("id", pending.id)
-      .eq("status", "pending")
-      .select("id, image_path")
-      .maybeSingle();
-    if (locked?.image_path) {
-      targetId = locked.id;
-      imagePath = locked.image_path;
-    }
-  }
-
-  // pending 없으면 scraping에 박혀있는 행도 회수 (이전 tick이 timeout으로 죽은 케이스).
-  // 동시 재시도 가능성은 마지막 write가 이김으로 흡수.
-  if (!targetId) {
-    const { data: stuck } = await admin
-      .from("product_analyses")
-      .select("id, image_path")
-      .eq("status", "scraping")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    if (stuck?.image_path) {
-      targetId = stuck.id;
-      imagePath = stuck.image_path;
-    }
-  }
-
-  if (!targetId || !imagePath) return null;
-
+async function processVisionRow(
+  admin: SupabaseClient,
+  targetId: string,
+  imagePath: string,
+) {
   try {
     const buf = await downloadScreenshot(imagePath);
     const extracted = await extractFromImage(buf, mediaTypeFromPath(imagePath));
@@ -85,6 +45,38 @@ async function runVisionStage(admin: SupabaseClient) {
       .eq("id", targetId);
     return { ok: true, id: targetId, status: "scrape_failed", reason };
   }
+}
+
+async function runPendingStage(admin: SupabaseClient) {
+  const { data: pending } = await admin
+    .from("product_analyses")
+    .select("id, image_path")
+    .eq("status", "pending")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!pending?.image_path) return null;
+  const { data: locked } = await admin
+    .from("product_analyses")
+    .update({ status: "scraping" })
+    .eq("id", pending.id)
+    .eq("status", "pending")
+    .select("id, image_path")
+    .maybeSingle();
+  if (!locked?.image_path) return { ok: true, picked: 0, reason: "race-lost" };
+  return processVisionRow(admin, locked.id, locked.image_path);
+}
+
+async function runStuckScrapingRecovery(admin: SupabaseClient) {
+  const { data: stuck } = await admin
+    .from("product_analyses")
+    .select("id, image_path")
+    .eq("status", "scraping")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!stuck?.image_path) return null;
+  return processVisionRow(admin, stuck.id, stuck.image_path);
 }
 
 async function runMatchingStage(admin: SupabaseClient) {
@@ -172,10 +164,14 @@ async function runMatchingStage(admin: SupabaseClient) {
 
 async function processOne() {
   const admin = createAdminClient();
-  const visionOut = await runVisionStage(admin);
-  if (visionOut) return visionOut;
+  // 우선순위: pending → matching → 옛 stuck scraping 회수.
+  // matching이 stuck 회수보다 우선이라 옛 실패 행이 새 매칭 흐름을 막지 않음.
+  const pendingOut = await runPendingStage(admin);
+  if (pendingOut) return pendingOut;
   const matchingOut = await runMatchingStage(admin);
   if (matchingOut) return matchingOut;
+  const stuckOut = await runStuckScrapingRecovery(admin);
+  if (stuckOut) return stuckOut;
   return { ok: true, picked: 0 };
 }
 

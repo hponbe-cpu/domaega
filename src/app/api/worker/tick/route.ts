@@ -23,9 +23,29 @@ async function processVisionRow(
   targetId: string,
   imagePath: string,
 ) {
+  const t0 = Date.now();
+  console.log(JSON.stringify({ msg: "vision.start", id: targetId, imagePath }));
   try {
     const buf = await downloadScreenshot(imagePath);
+    const t1 = Date.now();
+    console.log(
+      JSON.stringify({
+        msg: "vision.downloaded",
+        id: targetId,
+        bytes: buf.length,
+        ms: t1 - t0,
+      }),
+    );
     const extracted = await extractFromImage(buf, mediaTypeFromPath(imagePath));
+    const t2 = Date.now();
+    console.log(
+      JSON.stringify({
+        msg: "vision.extracted",
+        id: targetId,
+        ms: t2 - t1,
+        title_ko: extracted.title_ko.slice(0, 50),
+      }),
+    );
     const hero: HeroData = {
       title: extracted.title_ko,
       price: extracted.price_krw ?? undefined,
@@ -36,9 +56,24 @@ async function processVisionRow(
       .from("product_analyses")
       .update({ status: "matching", hero_data: hero, extracted })
       .eq("id", targetId);
+    console.log(
+      JSON.stringify({
+        msg: "vision.done",
+        id: targetId,
+        totalMs: Date.now() - t0,
+      }),
+    );
     return { ok: true, id: targetId, status: "matching" };
   } catch (e) {
     const reason = (e as Error).message;
+    console.log(
+      JSON.stringify({
+        msg: "vision.fail",
+        id: targetId,
+        reason,
+        totalMs: Date.now() - t0,
+      }),
+    );
     await admin
       .from("product_analyses")
       .update({ status: "scrape_failed", confidence_note: reason })

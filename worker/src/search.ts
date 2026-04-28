@@ -114,6 +114,33 @@ export async function search1688(query: string): Promise<Search1688Result> {
       return out;
     });
 
+    if (results.length === 0) {
+      const pageTitle = await page.title().catch(() => "");
+      const finalUrl = page.url();
+      const snippet = await page
+        .evaluate(() =>
+          (document.body?.innerText || "").trim().slice(0, 400),
+        )
+        .catch(() => "");
+      const offerLinkCount = await page
+        .evaluate(
+          () =>
+            document.querySelectorAll('a[href*="detail.1688.com/offer/"]')
+              .length,
+        )
+        .catch(() => 0);
+      console.log(
+        JSON.stringify({
+          msg: "search1688.empty",
+          query,
+          pageTitle,
+          finalUrl,
+          offerLinkCount,
+          bodySnippet: snippet,
+        }),
+      );
+    }
+
     consecutiveFailures = 0;
     return { ok: true, results, query };
   } catch (e) {

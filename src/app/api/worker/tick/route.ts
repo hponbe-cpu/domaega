@@ -70,8 +70,23 @@ async function processOne() {
     return { ok: true, id: locked.id, status: "scrape_failed", reason };
   }
 
-  // Stage 2: 1688 검색
-  const query = extracted.search_keywords_zh.slice(0, 3).join(" ");
+  // Stage 2: 1688 검색. zh 키워드 비면 한국어 제목으로 fallback (1688이 영문 브랜드/숫자는 잡음).
+  const zhParts = extracted.search_keywords_zh
+    .slice(0, 3)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const query = zhParts.length > 0 ? zhParts.join(" ") : extracted.title_ko;
+  if (!query.trim()) {
+    await admin
+      .from("product_analyses")
+      .update({
+        status: "completed",
+        state: "unknown",
+        confidence_note: "검색어 추출 실패",
+      })
+      .eq("id", locked.id);
+    return { ok: true, id: locked.id, status: "completed", reason: "no-query" };
+  }
   let items;
   try {
     items = await search1688(query);

@@ -23,8 +23,14 @@ export const ExtractedSchema = z.object({
   brand: nullableString,
   price_krw: nullableNumber,
   category_hint: nullableString,
-  search_keywords_zh: z.array(z.string()).default([]),
-  confidence: z.enum(["high", "medium", "low"]).default("medium"),
+  search_keywords_zh: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  confidence: z
+    .enum(["high", "medium", "low"])
+    .nullish()
+    .transform((v) => v ?? "medium"),
   notes: nullableString,
 });
 

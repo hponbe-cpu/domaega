@@ -241,7 +241,7 @@ async function runMatchingStage(admin: SupabaseClient) {
 
   const extracted = row.extracted as Extracted;
   const startedAt = Date.now();
-  let lastError: string | null = null;
+  let imageSearchError: string | null = null;
 
   if (row.image_path) {
     try {
@@ -286,23 +286,28 @@ async function runMatchingStage(admin: SupabaseClient) {
         };
       }
     } catch (e) {
-      lastError = (e as Error).message;
+      imageSearchError = (e as Error).message;
       console.log(
-        JSON.stringify({ msg: "match.image.err", id: row.id, err: lastError }),
+        JSON.stringify({
+          msg: "match.image.err",
+          id: row.id,
+          err: imageSearchError,
+        }),
       );
     }
   }
 
   const hasTimeForTextFallback =
-    Date.now() - startedAt < 15_000 || isNonBlockingImageSearchError(lastError);
+    Date.now() - startedAt < 15_000 ||
+    isNonBlockingImageSearchError(imageSearchError);
   if (!hasTimeForTextFallback) {
     await admin
       .from("product_analyses")
       .update({
         status: "completed",
         state: "unknown",
-        confidence_note: lastError
-          ? `1688 image search failed: ${lastError}`
+        confidence_note: imageSearchError
+          ? `1688 image search failed: ${imageSearchError}`
           : "No 1688 image search results",
       })
       .eq("id", row.id);
@@ -320,7 +325,7 @@ async function runMatchingStage(admin: SupabaseClient) {
     .slice(0, 1);
 
   if (candidates.length === 0) {
-    const note = isNonBlockingImageSearchError(lastError)
+    const note = isNonBlockingImageSearchError(imageSearchError)
       ? "1688 image search requires login; no Chinese text query extracted"
       : "No Chinese search query extracted";
     await admin
@@ -337,6 +342,7 @@ async function runMatchingStage(admin: SupabaseClient) {
   const tried: string[] = [];
   let items: Awaited<ReturnType<typeof search1688>> = [];
   let usedQuery = "";
+  let textSearchError: string | null = null;
 
   for (const q of candidates) {
     tried.push(q);
@@ -351,16 +357,16 @@ async function runMatchingStage(admin: SupabaseClient) {
         break;
       }
     } catch (e) {
-      lastError = (e as Error).message;
+      textSearchError = (e as Error).message;
       console.log(
-        JSON.stringify({ msg: "match.err", id: row.id, q, err: lastError }),
+        JSON.stringify({ msg: "match.err", id: row.id, q, err: textSearchError }),
       );
     }
   }
 
   if (items.length === 0) {
-    const note = lastError
-      ? `1688 search failed: ${lastError} (tried: ${tried.join(" | ")})`
+    const note = textSearchError
+      ? `1688 search failed: ${textSearchError} (tried: ${tried.join(" | ")})`
       : `No 1688 results (tried: ${tried.join(" | ")})`;
     await admin
       .from("product_analyses")

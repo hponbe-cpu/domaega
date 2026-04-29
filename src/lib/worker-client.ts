@@ -19,7 +19,7 @@ export async function search1688(query: string): Promise<Item1688[]> {
     },
     body: JSON.stringify({ query }),
     cache: "no-store",
-    signal: AbortSignal.timeout(28000),
+    signal: AbortSignal.timeout(50000),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");

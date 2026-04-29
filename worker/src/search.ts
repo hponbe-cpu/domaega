@@ -54,7 +54,7 @@ export async function search1688(query: string): Promise<Search1688Result> {
   try {
     const res = await page.goto(url, {
       waitUntil: "domcontentloaded",
-      timeout: 25000,
+      timeout: 40000,
     });
     const status = res?.status() ?? 0;
     if (!res || status >= 400) {

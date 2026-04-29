@@ -30,6 +30,10 @@ function nextVisionAttempt(retryCount: number): string {
   return new Date(Date.now() + delay).toISOString();
 }
 
+function isChineseSearchQuery(query: string): boolean {
+  return /[\u3400-\u9fff]/.test(query);
+}
+
 async function processVisionRow(
   admin: SupabaseClient,
   targetId: string,
@@ -230,8 +234,11 @@ async function runMatchingStage(admin: SupabaseClient) {
     ...extracted.search_keywords_zh.map((s) => s.trim()).filter(Boolean),
     extracted.title_ko.trim(),
   ]
-    .filter((s, i, arr) => s.length > 0 && arr.indexOf(s) === i)
-    .slice(0, 2);
+    .filter(
+      (s, i, arr) =>
+        s.length > 0 && arr.indexOf(s) === i && isChineseSearchQuery(s),
+    )
+    .slice(0, 1);
 
   if (candidates.length === 0) {
     await admin
@@ -239,7 +246,7 @@ async function runMatchingStage(admin: SupabaseClient) {
       .update({
         status: "completed",
         state: "unknown",
-        confidence_note: "No search query extracted",
+        confidence_note: "No Chinese search query extracted",
       })
       .eq("id", row.id);
     return { ok: true, id: row.id, status: "completed", reason: "no-query" };

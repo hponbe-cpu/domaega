@@ -24,7 +24,7 @@ async function parseWorkerSearchResponse(
 ): Promise<Item1688[]> {
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`worker ${endpoint} ${res.status}: ${body.slice(0, 200)}`);
+    throw new Error(`worker ${endpoint} ${res.status}: ${body.slice(0, 1200)}`);
   }
   const data = (await res.json()) as WorkerSearchResponse;
   if (!data.ok) throw new Error(data.reason);

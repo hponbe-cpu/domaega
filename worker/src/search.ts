@@ -298,6 +298,10 @@ export async function search1688ByImage({
     const directFileInput = await findFileInput(page);
     if (!directFileInput) {
       const diagnostics = await collectImageSearchDiagnostics(page);
+      const diagnosticSummary = JSON.stringify({
+        finalUrl: page.url(),
+        diagnostics,
+      }).slice(0, 1200);
       console.log(
         JSON.stringify({
           msg: "search1688.image.no_file_input",
@@ -305,7 +309,10 @@ export async function search1688ByImage({
           diagnostics,
         }),
       );
-      return { ok: false, reason: "1688 image upload input not found" };
+      return {
+        ok: false,
+        reason: `1688 image upload input not found: ${diagnosticSummary}`,
+      };
     }
 
     await directFileInput.setInputFiles({

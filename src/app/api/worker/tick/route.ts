@@ -34,6 +34,16 @@ function isChineseSearchQuery(query: string): boolean {
   return /[\u3400-\u9fff]/.test(query);
 }
 
+function isNonBlockingImageSearchError(reason: string | null): boolean {
+  if (!reason) return false;
+  return (
+    reason.includes("login.taobao.com") ||
+    reason.includes("login.1688.com") ||
+    reason.includes("image upload input not found") ||
+    reason.includes("image search requires login")
+  );
+}
+
 async function processVisionRow(
   admin: SupabaseClient,
   targetId: string,
@@ -283,7 +293,8 @@ async function runMatchingStage(admin: SupabaseClient) {
     }
   }
 
-  const hasTimeForTextFallback = Date.now() - startedAt < 15_000;
+  const hasTimeForTextFallback =
+    Date.now() - startedAt < 15_000 || isNonBlockingImageSearchError(lastError);
   if (!hasTimeForTextFallback) {
     await admin
       .from("product_analyses")
@@ -309,12 +320,15 @@ async function runMatchingStage(admin: SupabaseClient) {
     .slice(0, 1);
 
   if (candidates.length === 0) {
+    const note = isNonBlockingImageSearchError(lastError)
+      ? "1688 image search requires login; no Chinese text query extracted"
+      : "No Chinese search query extracted";
     await admin
       .from("product_analyses")
       .update({
         status: "completed",
         state: "unknown",
-        confidence_note: "No Chinese search query extracted",
+        confidence_note: note,
       })
       .eq("id", row.id);
     return { ok: true, id: row.id, status: "completed", reason: "no-query" };

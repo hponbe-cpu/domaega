@@ -298,20 +298,26 @@ export async function search1688ByImage({
     const directFileInput = await findFileInput(page);
     if (!directFileInput) {
       const diagnostics = await collectImageSearchDiagnostics(page);
+      const finalUrl = page.url();
+      const requiresLogin =
+        finalUrl.includes("login.taobao.com") ||
+        finalUrl.includes("login.1688.com");
       const diagnosticSummary = JSON.stringify({
-        finalUrl: page.url(),
+        finalUrl,
         diagnostics,
       }).slice(0, 1200);
       console.log(
         JSON.stringify({
           msg: "search1688.image.no_file_input",
-          finalUrl: page.url(),
+          finalUrl,
           diagnostics,
         }),
       );
       return {
         ok: false,
-        reason: `1688 image upload input not found: ${diagnosticSummary}`,
+        reason: requiresLogin
+          ? `1688 image search requires login: ${diagnosticSummary}`
+          : `1688 image upload input not found: ${diagnosticSummary}`,
       };
     }
 

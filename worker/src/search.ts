@@ -55,6 +55,114 @@ export type ImageSearchInput = {
   mediaType: "image/png" | "image/jpeg" | "image/webp";
 };
 
+async function findFileInput(page: Page) {
+  for (const frame of page.frames()) {
+    const inputs = await frame.$$('input[type="file"]');
+    if (inputs.length > 0) return inputs[0];
+  }
+  return null;
+}
+
+async function collectImageSearchDiagnostics(page: Page) {
+  return page
+    .evaluate(() => {
+      const links = Array.from(document.querySelectorAll("a"))
+        .map((a) => ({
+          text: (a.textContent || "").trim().slice(0, 80),
+          href: (a as HTMLAnchorElement).href,
+          title: a.getAttribute("title"),
+          aria: a.getAttribute("aria-label"),
+          className: String(a.getAttribute("class") || "").slice(0, 120),
+        }))
+        .filter((a) =>
+          `${a.text} ${a.href} ${a.title ?? ""} ${a.aria ?? ""} ${a.className}`
+            .toLowerCase()
+            .match(/image|pic|camera|photo|img|图片|搜图|拍照/),
+        )
+        .slice(0, 20);
+      const inputs = Array.from(document.querySelectorAll("input"))
+        .map((input) => ({
+          type: input.getAttribute("type"),
+          accept: input.getAttribute("accept"),
+          name: input.getAttribute("name"),
+          id: input.getAttribute("id"),
+          className: String(input.getAttribute("class") || "").slice(0, 120),
+        }))
+        .slice(0, 20);
+      return { links, inputs };
+    })
+    .catch((e) => ({ error: (e as Error).message }));
+}
+
+async function openImageUploadSurface(page: Page): Promise<void> {
+  const landingUrls = [
+    "https://www.1688.com/",
+    "https://s.1688.com/selloffer/offer_search.htm?tab=imageSearch",
+    "https://s.1688.com/selloffer/image_search.htm",
+  ];
+
+  const clickSelectors = [
+    'input[accept*="image"]',
+    '[class*="camera"]',
+    '[class*="Camera"]',
+    '[class*="pic"]',
+    '[class*="Pic"]',
+    '[class*="image"]',
+    '[class*="Image"]',
+    '[class*="photo"]',
+    '[class*="Photo"]',
+    '[title*="图片"]',
+    '[aria-label*="图片"]',
+    '[title*="搜图"]',
+    '[aria-label*="搜图"]',
+    '[title*="拍照"]',
+    '[aria-label*="拍照"]',
+  ];
+
+  for (const url of landingUrls) {
+    await page
+      .goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: 40000,
+      })
+      .catch(() => null);
+
+    if (await findFileInput(page)) return;
+
+    const imageSearchHref = await page
+      .evaluate(() => {
+        const candidates = Array.from(document.querySelectorAll("a"));
+        const target = candidates.find((a) =>
+          `${a.textContent ?? ""} ${(a as HTMLAnchorElement).href} ${
+            a.getAttribute("title") ?? ""
+          } ${a.getAttribute("aria-label") ?? ""}`
+            .toLowerCase()
+            .match(/image|pic|camera|photo|img|图片|搜图|拍照/),
+        ) as HTMLAnchorElement | undefined;
+        return target?.href ?? null;
+      })
+      .catch(() => null);
+
+    if (imageSearchHref) {
+      await page
+        .goto(imageSearchHref, {
+          waitUntil: "domcontentloaded",
+          timeout: 40000,
+        })
+        .catch(() => null);
+      if (await findFileInput(page)) return;
+    }
+
+    for (const selector of clickSelectors) {
+      const target = page.locator(selector).first();
+      if ((await target.count()) === 0) continue;
+      await target.click({ timeout: 1500, force: true }).catch(() => {});
+      await page.waitForTimeout(500);
+      if (await findFileInput(page)) return;
+    }
+  }
+}
+
 async function extractOfferResults(page: Page): Promise<Item1688[]> {
   await page
     .waitForSelector('a[href*="detail.1688.com/offer/"]', { timeout: 15000 })
@@ -185,6 +293,46 @@ export async function search1688ByImage({
     mediaType === "image/png" ? "png" : mediaType === "image/webp" ? "webp" : "jpg";
 
   try {
+    await openImageUploadSurface(page);
+
+    const directFileInput = await findFileInput(page);
+    if (!directFileInput) {
+      const diagnostics = await collectImageSearchDiagnostics(page);
+      console.log(
+        JSON.stringify({
+          msg: "search1688.image.no_file_input",
+          finalUrl: page.url(),
+          diagnostics,
+        }),
+      );
+      return { ok: false, reason: "1688 image upload input not found" };
+    }
+
+    await directFileInput.setInputFiles({
+      name: `query.${extension}`,
+      mimeType: mediaType,
+      buffer: imageBuffer,
+    });
+
+    await Promise.race([
+      page.waitForURL(/1688\.com|alicdn\.com/, { timeout: 45000 }),
+      page.waitForSelector('a[href*="detail.1688.com/offer/"]', {
+        timeout: 45000,
+      }),
+      page.waitForLoadState("networkidle", { timeout: 45000 }),
+    ]).catch(() => null);
+
+    const directResults = await extractOfferResults(page);
+    if (directResults.length === 0) {
+      await logEmptyResults(page, "search1688.image.empty", {
+        bytes: imageBuffer.length,
+        mediaType,
+      });
+    }
+
+    consecutiveFailures = 0;
+    return { ok: true, results: directResults, query: "image" };
+
     await page.goto("https://www.1688.com/", {
       waitUntil: "domcontentloaded",
       timeout: 40000,

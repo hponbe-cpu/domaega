@@ -97,7 +97,9 @@ const SYSTEM_PROMPT = `당신은 한국 온라인 쇼핑몰 캡처 화면에서 
   "notes": string | null
 }`;
 
-const HARD_TIMEOUT_MS = 25_000;
+// vision tick은 단독 호출이라 거의 60s 다 쓸 수 있음. OpenRouter 무료 큐 대기가
+// 길어 25s에선 자주 막힘. 50s까지 허용 + 응답/파싱 마진 10s 남김.
+const HARD_TIMEOUT_MS = 50_000;
 
 export async function extractFromImage(
   imageBuffer: Buffer,

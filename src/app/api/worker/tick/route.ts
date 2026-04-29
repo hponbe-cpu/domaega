@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { extractFromImage, VISION_TIMEOUT_TAG } from "@/lib/vision";
+import { extractFromImage, VISION_RETRY_TAG } from "@/lib/vision";
 import { downloadScreenshot } from "@/lib/storage";
 import { search1688 } from "@/lib/worker-client";
 import { NextResponse } from "next/server";
@@ -72,9 +72,9 @@ async function processVisionRow(
     return { ok: true, id: targetId, status: "matching" };
   } catch (e) {
     const reason = (e as Error).message;
-    const isTimeout = reason.startsWith(VISION_TIMEOUT_TAG);
+    const isTransient = reason.startsWith(VISION_RETRY_TAG);
     const ageMs = Date.now() - new Date(createdAt).getTime();
-    const canRetry = isTimeout && ageMs < VISION_RETRY_WINDOW_MS;
+    const canRetry = isTransient && ageMs < VISION_RETRY_WINDOW_MS;
     console.log(
       JSON.stringify({
         msg: "vision.fail",

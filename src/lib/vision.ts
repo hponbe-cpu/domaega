@@ -101,8 +101,9 @@ const SYSTEM_PROMPT = `당신은 한국 온라인 쇼핑몰 캡처 화면에서 
 // 무료 큐 변동으로 가끔 타임아웃 — tick 레벨에서 자동 재시도(pending 회귀)함.
 const HARD_TIMEOUT_MS = 50_000;
 
-// tick에서 timeout과 영구 실패를 구분하기 위한 마커. 메시지 매칭은 깨지기 쉬움.
-export const VISION_TIMEOUT_TAG = "vision-timeout";
+// tick에서 transient(재시도 가능)와 영구 실패를 구분하기 위한 마커.
+// 무료 모델은 timeout/빈응답/일시 5xx가 큐 변동으로 자주 나옴 — 모두 retry 풀.
+export const VISION_RETRY_TAG = "vision-retry";
 
 export async function extractFromImage(
   imageBuffer: Buffer,
@@ -139,7 +140,7 @@ export async function extractFromImage(
   } catch (e) {
     if (controller.signal.aborted) {
       throw new Error(
-        `${VISION_TIMEOUT_TAG}: 호출 타임아웃 (${HARD_TIMEOUT_MS / 1000}s)`,
+        `${VISION_RETRY_TAG}: 호출 타임아웃 (${HARD_TIMEOUT_MS / 1000}s)`,
       );
     }
     throw e;
@@ -147,7 +148,20 @@ export async function extractFromImage(
     clearTimeout(timer);
   }
   const text = response.choices[0]?.message?.content;
-  if (!text) throw new Error("Vision 응답 비어있음");
+  if (!text) {
+    // 무료 모델이 어쩌다 빈 content를 반환. finish_reason과 첫 choice를 같이 로그.
+    const choice0 = response.choices[0];
+    console.log(
+      JSON.stringify({
+        msg: "vision.empty_content",
+        model: MODEL,
+        finish_reason: choice0?.finish_reason,
+        message: choice0?.message,
+        usage: response.usage,
+      }),
+    );
+    throw new Error(`${VISION_RETRY_TAG}: 응답 비어있음`);
+  }
   let raw: unknown;
   try {
     raw = JSON.parse(text);

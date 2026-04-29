@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { extractFromImage } from "@/lib/vision";
+import { extractFromImage, VISION_TIMEOUT_TAG } from "@/lib/vision";
 import { downloadScreenshot } from "@/lib/storage";
 import { search1688 } from "@/lib/worker-client";
 import { NextResponse } from "next/server";
@@ -18,10 +18,16 @@ function mediaTypeFromPath(
   return "image/jpeg";
 }
 
+// 무료 모델 큐가 가끔 50s를 넘김. 한 번 timeout 났다고 사용자한테 빈손으로 가지 말고,
+// 행을 다시 pending으로 돌려 다음 tick에서 자동 재시도. 단 created_at 기준 10분 넘으면
+// 영구 실패 처리(무한 재시도 방지).
+const VISION_RETRY_WINDOW_MS = 10 * 60 * 1000;
+
 async function processVisionRow(
   admin: SupabaseClient,
   targetId: string,
   imagePath: string,
+  createdAt: string,
 ) {
   const t0 = Date.now();
   console.log(JSON.stringify({ msg: "vision.start", id: targetId, imagePath }));
@@ -66,14 +72,27 @@ async function processVisionRow(
     return { ok: true, id: targetId, status: "matching" };
   } catch (e) {
     const reason = (e as Error).message;
+    const isTimeout = reason.startsWith(VISION_TIMEOUT_TAG);
+    const ageMs = Date.now() - new Date(createdAt).getTime();
+    const canRetry = isTimeout && ageMs < VISION_RETRY_WINDOW_MS;
     console.log(
       JSON.stringify({
         msg: "vision.fail",
         id: targetId,
         reason,
+        ageMs,
+        canRetry,
         totalMs: Date.now() - t0,
       }),
     );
+    if (canRetry) {
+      // pending으로 회귀 → 다음 tick의 runPendingStage가 우선순위로 다시 시도.
+      await admin
+        .from("product_analyses")
+        .update({ status: "pending", confidence_note: `재시도 예정: ${reason}` })
+        .eq("id", targetId);
+      return { ok: true, id: targetId, status: "pending", retry: true };
+    }
     await admin
       .from("product_analyses")
       .update({ status: "scrape_failed", confidence_note: reason })
@@ -85,7 +104,7 @@ async function processVisionRow(
 async function runPendingStage(admin: SupabaseClient) {
   const { data: pending } = await admin
     .from("product_analyses")
-    .select("id, image_path")
+    .select("id, image_path, created_at")
     .eq("status", "pending")
     .order("created_at", { ascending: true })
     .limit(1)
@@ -96,22 +115,27 @@ async function runPendingStage(admin: SupabaseClient) {
     .update({ status: "scraping" })
     .eq("id", pending.id)
     .eq("status", "pending")
-    .select("id, image_path")
+    .select("id, image_path, created_at")
     .maybeSingle();
   if (!locked?.image_path) return { ok: true, picked: 0, reason: "race-lost" };
-  return processVisionRow(admin, locked.id, locked.image_path);
+  return processVisionRow(
+    admin,
+    locked.id,
+    locked.image_path,
+    locked.created_at,
+  );
 }
 
 async function runStuckScrapingRecovery(admin: SupabaseClient) {
   const { data: stuck } = await admin
     .from("product_analyses")
-    .select("id, image_path")
+    .select("id, image_path, created_at")
     .eq("status", "scraping")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
   if (!stuck?.image_path) return null;
-  return processVisionRow(admin, stuck.id, stuck.image_path);
+  return processVisionRow(admin, stuck.id, stuck.image_path, stuck.created_at);
 }
 
 async function runMatchingStage(admin: SupabaseClient) {

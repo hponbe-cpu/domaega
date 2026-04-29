@@ -9,9 +9,6 @@ const client = new OpenAI({
 });
 
 const MODEL = process.env.OPENROUTER_MODEL ?? "google/gemma-4-31b-it:free";
-// 무료 모델 큐가 50s+ 대기로 자주 막혀, 무료 실패 시 paid 모델로 1회 fallback.
-// 비워두면 fallback 없음. 권장값: google/gemini-2.0-flash-001 (vision, $0.10/M in).
-const FALLBACK_MODEL = process.env.OPENROUTER_FALLBACK_MODEL ?? "";
 
 // 모델이 nullable 필드를 null로 명시 안 하거나 다른 타입(배열/문자열-숫자 등)으로 반환하는 경우가
 // 있어 매우 관대한 union + transform으로 정규화. 무료 모델일수록 형식 안정성이 떨어짐.
@@ -100,23 +97,28 @@ const SYSTEM_PROMPT = `당신은 한국 온라인 쇼핑몰 캡처 화면에서 
   "notes": string | null
 }`;
 
-// vision tick은 단독 호출이라 거의 60s 다 씀. 무료 30s + paid fallback 20s = 50s,
-// 응답/파싱 마진 10s 남김. fallback 없으면 단일 호출에 50s 다 씀.
-const PRIMARY_TIMEOUT_MS = 30_000;
-const FALLBACK_TIMEOUT_MS = 20_000;
-const SOLO_TIMEOUT_MS = 50_000;
+// vision tick은 단독 호출이라 거의 60s 다 씀. 50s + 응답/파싱 마진 10s.
+// 무료 큐 변동으로 가끔 타임아웃 — tick 레벨에서 자동 재시도(pending 회귀)함.
+const HARD_TIMEOUT_MS = 50_000;
 
-async function callModel(
-  dataUrl: string,
-  model: string,
-  timeoutMs: number,
-): Promise<string> {
+// tick에서 timeout과 영구 실패를 구분하기 위한 마커. 메시지 매칭은 깨지기 쉬움.
+export const VISION_TIMEOUT_TAG = "vision-timeout";
+
+export async function extractFromImage(
+  imageBuffer: Buffer,
+  mediaType: "image/png" | "image/jpeg" | "image/webp",
+): Promise<Extracted> {
+  if (!process.env.OPENROUTER_API_KEY) {
+    throw new Error("OPENROUTER_API_KEY 미설정");
+  }
+  const dataUrl = `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), HARD_TIMEOUT_MS);
+  let response;
   try {
-    const response = await client.chat.completions.create(
+    response = await client.chat.completions.create(
       {
-        model,
+        model: MODEL,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
@@ -134,44 +136,18 @@ async function callModel(
       },
       { signal: controller.signal },
     );
-    const text = response.choices[0]?.message?.content;
-    if (!text) throw new Error("Vision 응답 비어있음");
-    return text;
   } catch (e) {
     if (controller.signal.aborted) {
-      throw new Error(`Vision 호출 타임아웃 (${timeoutMs / 1000}s, ${model})`);
+      throw new Error(
+        `${VISION_TIMEOUT_TAG}: 호출 타임아웃 (${HARD_TIMEOUT_MS / 1000}s)`,
+      );
     }
     throw e;
   } finally {
     clearTimeout(timer);
   }
-}
-
-export async function extractFromImage(
-  imageBuffer: Buffer,
-  mediaType: "image/png" | "image/jpeg" | "image/webp",
-): Promise<Extracted> {
-  if (!process.env.OPENROUTER_API_KEY) {
-    throw new Error("OPENROUTER_API_KEY 미설정");
-  }
-  const dataUrl = `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
-  const primaryTimeout = FALLBACK_MODEL ? PRIMARY_TIMEOUT_MS : SOLO_TIMEOUT_MS;
-  let text: string;
-  try {
-    text = await callModel(dataUrl, MODEL, primaryTimeout);
-  } catch (e) {
-    if (!FALLBACK_MODEL) throw e;
-    const primaryReason = (e as Error).message;
-    console.log(
-      JSON.stringify({
-        msg: "vision.fallback",
-        primary: MODEL,
-        fallback: FALLBACK_MODEL,
-        reason: primaryReason,
-      }),
-    );
-    text = await callModel(dataUrl, FALLBACK_MODEL, FALLBACK_TIMEOUT_MS);
-  }
+  const text = response.choices[0]?.message?.content;
+  if (!text) throw new Error("Vision 응답 비어있음");
   let raw: unknown;
   try {
     raw = JSON.parse(text);

@@ -13,6 +13,8 @@ export const maxDuration = 60;
 const MAX_VISION_RETRIES = 3;
 const VISION_RETRY_BACKOFF_MS = [30_000, 120_000, 300_000];
 const STUCK_SCRAPING_MS = 90_000;
+const ENABLE_1688_IMAGE_SEARCH =
+  process.env.ENABLE_1688_IMAGE_SEARCH === "true";
 
 function mediaTypeFromPath(
   path: string,
@@ -243,7 +245,7 @@ async function runMatchingStage(admin: SupabaseClient) {
   const startedAt = Date.now();
   let imageSearchError: string | null = null;
 
-  if (row.image_path) {
+  if (ENABLE_1688_IMAGE_SEARCH && row.image_path) {
     try {
       const buf = await downloadScreenshot(row.image_path);
       const imageItems = await search1688ByImage(

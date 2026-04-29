@@ -121,6 +121,14 @@ export default function ResultView({ initial }: { initial: Analysis }) {
     return () => window.clearTimeout(timer);
   }, [row.id, row.next_attempt_at, row.retry_count, row.status]);
 
+  useEffect(() => {
+    if (row.status !== "matching") return;
+    const timer = window.setInterval(() => {
+      fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [row.status]);
+
   return (
     <main className="min-h-screen px-6 pt-10 pb-16 sm:px-8 sm:pt-14">
       <div className="max-w-content mx-auto">

@@ -56,9 +56,13 @@ export const ExtractedSchema = z.object({
   price_krw: nullableNumber,
   category_hint: nullableString,
   search_keywords_zh: z
-    .array(z.string())
+    .union([z.array(z.string()), z.string()])
     .nullish()
-    .transform((v) => sanitizeKeywords(v ?? [])),
+    .transform((v) => {
+      if (!v) return [];
+      if (Array.isArray(v)) return sanitizeKeywords(v);
+      return sanitizeKeywords(v.split(/[,，、|/;\n]+|\s{2,}/));
+    }),
   confidence: z
     .enum(["high", "medium", "low"])
     .nullish()

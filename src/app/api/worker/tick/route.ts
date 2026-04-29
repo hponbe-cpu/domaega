@@ -125,12 +125,16 @@ async function runMatchingStage(admin: SupabaseClient) {
   if (!row?.extracted) return null;
 
   const extracted = row.extracted as Extracted;
-  const zhParts = extracted.search_keywords_zh
-    .slice(0, 3)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const query = zhParts.length > 0 ? zhParts.join(" ") : extracted.title_ko;
-  if (!query.trim()) {
+  // 키워드를 AND join하면 1688에서 거의 0건 나옴. 한 키워드씩 순차 시도하고
+  // 첫 hit에서 멈춤. Vercel 60s budget이라 최대 2회만 시도 (평균 30s/회).
+  const candidates = [
+    ...extracted.search_keywords_zh.map((s) => s.trim()).filter(Boolean),
+    extracted.title_ko.trim(),
+  ]
+    .filter((s, i, arr) => s.length > 0 && arr.indexOf(s) === i)
+    .slice(0, 2);
+
+  if (candidates.length === 0) {
     await admin
       .from("product_analyses")
       .update({
@@ -142,29 +146,40 @@ async function runMatchingStage(admin: SupabaseClient) {
     return { ok: true, id: row.id, status: "completed", reason: "no-query" };
   }
 
-  let items;
-  try {
-    items = await search1688(query);
-  } catch (e) {
-    const reason = (e as Error).message;
-    await admin
-      .from("product_analyses")
-      .update({
-        status: "completed",
-        state: "unknown",
-        confidence_note: `1688 검색 실패: ${reason}`,
-      })
-      .eq("id", row.id);
-    return { ok: true, id: row.id, status: "completed", reason };
+  const tried: string[] = [];
+  let items: Awaited<ReturnType<typeof search1688>> = [];
+  let usedQuery = "";
+  let lastError: string | null = null;
+  for (const q of candidates) {
+    tried.push(q);
+    try {
+      const r = await search1688(q);
+      console.log(
+        JSON.stringify({ msg: "match.try", id: row.id, q, count: r.length }),
+      );
+      if (r.length > 0) {
+        items = r;
+        usedQuery = q;
+        break;
+      }
+    } catch (e) {
+      lastError = (e as Error).message;
+      console.log(
+        JSON.stringify({ msg: "match.err", id: row.id, q, err: lastError }),
+      );
+    }
   }
 
   if (items.length === 0) {
+    const note = lastError
+      ? `1688 검색 실패: ${lastError} (시도: ${tried.join(" | ")})`
+      : `1688 검색 결과 없음 (시도: ${tried.join(" | ")})`;
     await admin
       .from("product_analyses")
       .update({
         status: "completed",
         state: "unknown",
-        confidence_note: `1688 검색 결과 없음 (검색어: ${query})`,
+        confidence_note: note,
       })
       .eq("id", row.id);
     return { ok: true, id: row.id, status: "completed", count: 0 };
@@ -184,7 +199,7 @@ async function runMatchingStage(admin: SupabaseClient) {
       status: "completed",
       state: "confident_match",
       matches,
-      confidence_note: null,
+      confidence_note: `검색어: ${usedQuery}`,
     })
     .eq("id", row.id);
 
@@ -194,6 +209,7 @@ async function runMatchingStage(admin: SupabaseClient) {
     status: "completed",
     state: "confident_match",
     count: matches.length,
+    query: usedQuery,
   };
 }
 

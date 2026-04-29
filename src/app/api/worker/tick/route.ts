@@ -1,7 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { extractFromImage, VISION_RETRY_TAG } from "@/lib/vision";
 import { downloadScreenshot } from "@/lib/storage";
-import { search1688 } from "@/lib/worker-client";
+import { search1688, search1688ByImage } from "@/lib/worker-client";
 import { NextResponse } from "next/server";
 import type { HeroData, Match, Extracted } from "@/types/analysis";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -221,7 +221,7 @@ async function runStuckScrapingRecovery(admin: SupabaseClient) {
 async function runMatchingStage(admin: SupabaseClient) {
   const { data: row } = await admin
     .from("product_analyses")
-    .select("id, extracted")
+    .select("id, extracted, image_path")
     .eq("status", "matching")
     .order("created_at", { ascending: true })
     .limit(1)
@@ -230,6 +230,74 @@ async function runMatchingStage(admin: SupabaseClient) {
   if (!row?.extracted) return null;
 
   const extracted = row.extracted as Extracted;
+  const startedAt = Date.now();
+  let lastError: string | null = null;
+
+  if (row.image_path) {
+    try {
+      const buf = await downloadScreenshot(row.image_path);
+      const imageItems = await search1688ByImage(
+        buf,
+        mediaTypeFromPath(row.image_path),
+      );
+      console.log(
+        JSON.stringify({
+          msg: "match.image",
+          id: row.id,
+          count: imageItems.length,
+        }),
+      );
+      if (imageItems.length > 0) {
+        const matches: Match[] = imageItems.map((it) => ({
+          title: it.title,
+          price: it.price,
+          image: it.image,
+          link: it.link,
+          source: "1688",
+        }));
+
+        await admin
+          .from("product_analyses")
+          .update({
+            status: "completed",
+            state: "confident_match",
+            matches,
+            confidence_note: "Search method: 1688 image search",
+          })
+          .eq("id", row.id);
+
+        return {
+          ok: true,
+          id: row.id,
+          status: "completed",
+          state: "confident_match",
+          count: matches.length,
+          query: "image",
+        };
+      }
+    } catch (e) {
+      lastError = (e as Error).message;
+      console.log(
+        JSON.stringify({ msg: "match.image.err", id: row.id, err: lastError }),
+      );
+    }
+  }
+
+  const hasTimeForTextFallback = Date.now() - startedAt < 15_000;
+  if (!hasTimeForTextFallback) {
+    await admin
+      .from("product_analyses")
+      .update({
+        status: "completed",
+        state: "unknown",
+        confidence_note: lastError
+          ? `1688 image search failed: ${lastError}`
+          : "No 1688 image search results",
+      })
+      .eq("id", row.id);
+    return { ok: true, id: row.id, status: "completed", count: 0 };
+  }
+
   const candidates = [
     ...extracted.search_keywords_zh.map((s) => s.trim()).filter(Boolean),
     extracted.title_ko.trim(),
@@ -255,7 +323,6 @@ async function runMatchingStage(admin: SupabaseClient) {
   const tried: string[] = [];
   let items: Awaited<ReturnType<typeof search1688>> = [];
   let usedQuery = "";
-  let lastError: string | null = null;
 
   for (const q of candidates) {
     tried.push(q);

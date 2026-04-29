@@ -4,7 +4,7 @@ import { z } from "zod";
 const client = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
   apiKey: process.env.OPENROUTER_API_KEY ?? "",
-  timeout: 30_000,
+  timeout: 45_000,
   maxRetries: 0,
 });
 
@@ -99,11 +99,21 @@ const SYSTEM_PROMPT = `당신은 한국 온라인 쇼핑몰 캡처 화면에서 
 
 // vision tick은 단독 호출이라 거의 60s 다 씀. 50s + 응답/파싱 마진 10s.
 // 무료 큐 변동으로 가끔 타임아웃 — tick 레벨에서 자동 재시도(pending 회귀)함.
-const HARD_TIMEOUT_MS = 50_000;
+const HARD_TIMEOUT_MS = 45_000;
 
 // tick에서 transient(재시도 가능)와 영구 실패를 구분하기 위한 마커.
 // 무료 모델은 timeout/빈응답/일시 5xx가 큐 변동으로 자주 나옴 — 모두 retry 풀.
 export const VISION_RETRY_TAG = "vision-retry";
+
+function isTimeoutLikeError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const msg = e.message.toLowerCase();
+  return (
+    msg.includes("timeout") ||
+    msg.includes("timed out") ||
+    msg.includes("abort")
+  );
+}
 
 export async function extractFromImage(
   imageBuffer: Buffer,
@@ -138,7 +148,7 @@ export async function extractFromImage(
       { signal: controller.signal },
     );
   } catch (e) {
-    if (controller.signal.aborted) {
+    if (controller.signal.aborted || isTimeoutLikeError(e)) {
       throw new Error(
         `${VISION_RETRY_TAG}: 호출 타임아웃 (${HARD_TIMEOUT_MS / 1000}s)`,
       );

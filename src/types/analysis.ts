@@ -54,6 +54,10 @@ export type Analysis = {
   matches: Match[] | null;
   top1_similarity: number | null;
   confidence_note: string | null;
+  retry_count: number;
+  next_attempt_at: string;
+  processing_started_at: string | null;
+  last_error: string | null;
   created_at: string;
   view_count: number;
 };

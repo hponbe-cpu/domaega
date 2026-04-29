@@ -10,6 +10,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+const MAX_VISION_RETRIES = 3;
+const VISION_RETRY_BACKOFF_MS = [30_000, 120_000, 300_000];
+const STUCK_SCRAPING_MS = 90_000;
+
 function mediaTypeFromPath(
   path: string,
 ): "image/png" | "image/jpeg" | "image/webp" {
@@ -18,19 +22,23 @@ function mediaTypeFromPath(
   return "image/jpeg";
 }
 
-// 무료 모델 큐가 가끔 50s를 넘김. 한 번 timeout 났다고 사용자한테 빈손으로 가지 말고,
-// 행을 다시 pending으로 돌려 다음 tick에서 자동 재시도. 단 created_at 기준 10분 넘으면
-// 영구 실패 처리(무한 재시도 방지).
-const VISION_RETRY_WINDOW_MS = 10 * 60 * 1000;
+function nextVisionAttempt(retryCount: number): string {
+  const delay =
+    VISION_RETRY_BACKOFF_MS[
+      Math.min(retryCount, VISION_RETRY_BACKOFF_MS.length - 1)
+    ];
+  return new Date(Date.now() + delay).toISOString();
+}
 
 async function processVisionRow(
   admin: SupabaseClient,
   targetId: string,
   imagePath: string,
-  createdAt: string,
+  retryCount: number,
 ) {
   const t0 = Date.now();
   console.log(JSON.stringify({ msg: "vision.start", id: targetId, imagePath }));
+
   try {
     const buf = await downloadScreenshot(imagePath);
     const t1 = Date.now();
@@ -42,6 +50,7 @@ async function processVisionRow(
         ms: t1 - t0,
       }),
     );
+
     const extracted = await extractFromImage(buf, mediaTypeFromPath(imagePath));
     const t2 = Date.now();
     console.log(
@@ -52,16 +61,25 @@ async function processVisionRow(
         title_ko: extracted.title_ko.slice(0, 50),
       }),
     );
+
     const hero: HeroData = {
       title: extracted.title_ko,
       price: extracted.price_krw ?? undefined,
       brand: extracted.brand ?? undefined,
       category: extracted.category_hint ?? undefined,
     };
+
     await admin
       .from("product_analyses")
-      .update({ status: "matching", hero_data: hero, extracted })
+      .update({
+        status: "matching",
+        hero_data: hero,
+        extracted,
+        processing_started_at: null,
+        last_error: null,
+      })
       .eq("id", targetId);
+
     console.log(
       JSON.stringify({
         msg: "vision.done",
@@ -69,73 +87,131 @@ async function processVisionRow(
         totalMs: Date.now() - t0,
       }),
     );
+
     return { ok: true, id: targetId, status: "matching" };
   } catch (e) {
     const reason = (e as Error).message;
     const isTransient = reason.startsWith(VISION_RETRY_TAG);
-    const ageMs = Date.now() - new Date(createdAt).getTime();
-    const canRetry = isTransient && ageMs < VISION_RETRY_WINDOW_MS;
+    const canRetry = isTransient && retryCount < MAX_VISION_RETRIES;
+    const nextRetryCount = retryCount + 1;
+
     console.log(
       JSON.stringify({
         msg: "vision.fail",
         id: targetId,
         reason,
-        ageMs,
+        retryCount,
         canRetry,
         totalMs: Date.now() - t0,
       }),
     );
+
     if (canRetry) {
-      // pending으로 회귀 → 다음 tick의 runPendingStage가 우선순위로 다시 시도.
       await admin
         .from("product_analyses")
-        .update({ status: "pending", confidence_note: `재시도 예정: ${reason}` })
+        .update({
+          status: "pending",
+          retry_count: nextRetryCount,
+          next_attempt_at: nextVisionAttempt(retryCount),
+          processing_started_at: null,
+          last_error: reason,
+          confidence_note: `Retry scheduled (${nextRetryCount}/${MAX_VISION_RETRIES}): ${reason}`,
+        })
         .eq("id", targetId);
-      return { ok: true, id: targetId, status: "pending", retry: true };
+
+      return {
+        ok: true,
+        id: targetId,
+        status: "pending",
+        retry: true,
+        retryCount: nextRetryCount,
+      };
     }
+
     await admin
       .from("product_analyses")
-      .update({ status: "scrape_failed", confidence_note: reason })
+      .update({
+        status: "scrape_failed",
+        processing_started_at: null,
+        last_error: reason,
+        confidence_note: reason,
+      })
       .eq("id", targetId);
+
     return { ok: true, id: targetId, status: "scrape_failed", reason };
   }
 }
 
 async function runPendingStage(admin: SupabaseClient) {
+  const nowIso = new Date().toISOString();
   const { data: pending } = await admin
     .from("product_analyses")
-    .select("id, image_path, created_at")
+    .select("id, image_path, retry_count")
     .eq("status", "pending")
+    .lte("next_attempt_at", nowIso)
+    .order("next_attempt_at", { ascending: true })
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
+
   if (!pending?.image_path) return null;
+
+  const processingStartedAt = new Date().toISOString();
   const { data: locked } = await admin
     .from("product_analyses")
-    .update({ status: "scraping" })
+    .update({
+      status: "scraping",
+      processing_started_at: processingStartedAt,
+      last_error: null,
+    })
     .eq("id", pending.id)
     .eq("status", "pending")
-    .select("id, image_path, created_at")
+    .lte("next_attempt_at", nowIso)
+    .select("id, image_path, retry_count")
     .maybeSingle();
+
   if (!locked?.image_path) return { ok: true, picked: 0, reason: "race-lost" };
+
   return processVisionRow(
     admin,
     locked.id,
     locked.image_path,
-    locked.created_at,
+    locked.retry_count ?? 0,
   );
 }
 
 async function runStuckScrapingRecovery(admin: SupabaseClient) {
+  const staleBefore = new Date(Date.now() - STUCK_SCRAPING_MS).toISOString();
+  const staleFilter = `processing_started_at.is.null,processing_started_at.lte.${staleBefore}`;
   const { data: stuck } = await admin
     .from("product_analyses")
-    .select("id, image_path, created_at")
+    .select("id, image_path, retry_count")
     .eq("status", "scraping")
+    .or(staleFilter)
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
+
   if (!stuck?.image_path) return null;
-  return processVisionRow(admin, stuck.id, stuck.image_path, stuck.created_at);
+
+  const processingStartedAt = new Date().toISOString();
+  const { data: locked } = await admin
+    .from("product_analyses")
+    .update({ processing_started_at: processingStartedAt })
+    .eq("id", stuck.id)
+    .eq("status", "scraping")
+    .or(staleFilter)
+    .select("id, image_path, retry_count")
+    .maybeSingle();
+
+  if (!locked?.image_path) return { ok: true, picked: 0, reason: "race-lost" };
+
+  return processVisionRow(
+    admin,
+    locked.id,
+    locked.image_path,
+    locked.retry_count ?? 0,
+  );
 }
 
 async function runMatchingStage(admin: SupabaseClient) {
@@ -146,11 +222,10 @@ async function runMatchingStage(admin: SupabaseClient) {
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
+
   if (!row?.extracted) return null;
 
   const extracted = row.extracted as Extracted;
-  // 키워드를 AND join하면 1688에서 거의 0건 나옴. 한 키워드씩 순차 시도하고
-  // 첫 hit에서 멈춤. Vercel 60s budget이라 최대 2회만 시도 (평균 30s/회).
   const candidates = [
     ...extracted.search_keywords_zh.map((s) => s.trim()).filter(Boolean),
     extracted.title_ko.trim(),
@@ -164,7 +239,7 @@ async function runMatchingStage(admin: SupabaseClient) {
       .update({
         status: "completed",
         state: "unknown",
-        confidence_note: "검색어 추출 실패",
+        confidence_note: "No search query extracted",
       })
       .eq("id", row.id);
     return { ok: true, id: row.id, status: "completed", reason: "no-query" };
@@ -174,6 +249,7 @@ async function runMatchingStage(admin: SupabaseClient) {
   let items: Awaited<ReturnType<typeof search1688>> = [];
   let usedQuery = "";
   let lastError: string | null = null;
+
   for (const q of candidates) {
     tried.push(q);
     try {
@@ -196,8 +272,8 @@ async function runMatchingStage(admin: SupabaseClient) {
 
   if (items.length === 0) {
     const note = lastError
-      ? `1688 검색 실패: ${lastError} (시도: ${tried.join(" | ")})`
-      : `1688 검색 결과 없음 (시도: ${tried.join(" | ")})`;
+      ? `1688 search failed: ${lastError} (tried: ${tried.join(" | ")})`
+      : `No 1688 results (tried: ${tried.join(" | ")})`;
     await admin
       .from("product_analyses")
       .update({
@@ -223,7 +299,7 @@ async function runMatchingStage(admin: SupabaseClient) {
       status: "completed",
       state: "confident_match",
       matches,
-      confidence_note: `검색어: ${usedQuery}`,
+      confidence_note: `Search query: ${usedQuery}`,
     })
     .eq("id", row.id);
 
@@ -239,8 +315,6 @@ async function runMatchingStage(admin: SupabaseClient) {
 
 async function processOne() {
   const admin = createAdminClient();
-  // 우선순위: pending → matching → 옛 stuck scraping 회수.
-  // matching이 stuck 회수보다 우선이라 옛 실패 행이 새 매칭 흐름을 막지 않음.
   const pendingOut = await runPendingStage(admin);
   if (pendingOut) return pendingOut;
   const matchingOut = await runMatchingStage(admin);

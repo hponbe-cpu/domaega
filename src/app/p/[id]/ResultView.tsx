@@ -48,6 +48,7 @@ function priceRange(matches: Match[]): { min: number; max: number } | null {
 export default function ResultView({ initial }: { initial: Analysis }) {
   const [row, setRow] = useState<Analysis>(initial);
   const tickFiredFor = useRef<Set<string>>(new Set());
+  const retryTickFiredFor = useRef<Set<string>>(new Set());
   const initialFireDone = useRef(false);
 
   useEffect(() => {
@@ -100,6 +101,25 @@ export default function ResultView({ initial }: { initial: Analysis }) {
       fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
     }
   }, [row.status]);
+
+  useEffect(() => {
+    if (row.status !== "pending" || row.retry_count === 0 || !row.next_attempt_at) {
+      return;
+    }
+    const attemptKey = `${row.id}:${row.retry_count}:${row.next_attempt_at}`;
+    if (retryTickFiredFor.current.has(attemptKey)) return;
+
+    const delayMs = Math.max(
+      0,
+      new Date(row.next_attempt_at).getTime() - Date.now(),
+    );
+    const timer = window.setTimeout(() => {
+      retryTickFiredFor.current.add(attemptKey);
+      fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
+    }, delayMs);
+
+    return () => window.clearTimeout(timer);
+  }, [row.id, row.next_attempt_at, row.retry_count, row.status]);
 
   return (
     <main className="min-h-screen px-6 pt-10 pb-16 sm:px-8 sm:pt-14">

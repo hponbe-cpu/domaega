@@ -50,25 +50,34 @@ function sanitizeKeywords(arr: string[]): string[] {
   return out;
 }
 
-export const ExtractedSchema = z.object({
-  title_ko: z.string(),
-  brand: nullableString,
-  price_krw: nullableNumber,
-  category_hint: nullableString,
-  search_keywords_zh: z
-    .union([z.array(z.string()), z.string()])
-    .nullish()
-    .transform((v) => {
-      if (!v) return [];
-      if (Array.isArray(v)) return sanitizeKeywords(v);
-      return sanitizeKeywords(v.split(/[,，、|/;\n]+|\s{2,}/));
-    }),
-  confidence: z
-    .enum(["high", "medium", "low"])
-    .nullish()
-    .transform((v) => v ?? "medium"),
-  notes: nullableString,
-});
+export const ExtractedSchema = z
+  .object({
+    title_ko: nullableString,
+    brand: nullableString,
+    price_krw: nullableNumber,
+    category_hint: nullableString,
+    search_keywords_zh: z
+      .union([z.array(z.string()), z.string()])
+      .nullish()
+      .transform((v) => {
+        if (!v) return [];
+        if (Array.isArray(v)) return sanitizeKeywords(v);
+        return sanitizeKeywords(v.split(/[,，、|/;\n]+|\s{2,}/));
+      }),
+    confidence: z
+      .enum(["high", "medium", "low"])
+      .nullish()
+      .transform((v) => v ?? "medium"),
+    notes: nullableString,
+  })
+  .transform((v) => ({
+    ...v,
+    title_ko:
+      v.title_ko ??
+      v.category_hint ??
+      v.search_keywords_zh[0] ??
+      "상품 정보 추출 불확실",
+  }));
 
 export type Extracted = z.infer<typeof ExtractedSchema>;
 
